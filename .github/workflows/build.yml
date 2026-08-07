@@ -64,10 +64,23 @@ jobs:
           unset ANDROID_NDK ANDROID_NDK_HOME ANDROID_NDK_ROOT ANDROID_HOME ANDROID_SDK_ROOT
           echo "✅ 已清除冲突的 Android 环境变量"
 
-      - name: Install Buildozer
+      # ---------- 关键修复：安装最新 p4a 和固定 Cython ----------
+      - name: Install latest python-for-android and Cython
         run: |
           pip install --upgrade pip
-          pip install buildozer cython
+          pip install --upgrade Cython==0.29.36
+          pip install --upgrade git+https://github.com/kivy/python-for-android@master
+
+      # ---------- 关键修复：允许隐式函数声明（临时绕过） ----------
+      - name: Allow implicit function declarations (workaround)
+        run: |
+          echo "CFLAGS=-Wno-error=implicit-function-declaration" >> $GITHUB_ENV
+          echo "CXXFLAGS=-Wno-error=implicit-function-declaration" >> $GITHUB_ENV
+
+      # ---------- 其余 Buildozer 相关步骤 ----------
+      - name: Install Buildozer
+        run: |
+          pip install buildozer
 
       - name: Create setup.py
         run: |
@@ -89,32 +102,28 @@ jobs:
           echo "🧹 清理旧构建目录（可能含有旧 NDK 产物）..."
           rm -rf .buildozer/android/platform/build-*
 
-      # ========== 核心构建步骤（增强错误提取） ==========
+      # ---------- 核心构建步骤（增强错误提取 + 详细日志） ----------
       - name: Build APK with verbose logging
         id: build
         run: |
           BUILD_CMD="buildozer -v android ${{ inputs.build_type }}"
           echo "🔨 执行命令: $BUILD_CMD"
+          # 将日志同时输出到终端和文件，且设置 log_level=2（在 spec 中已有）
           $BUILD_CMD 2>&1 | tee build.log
           EXIT_CODE=${PIPESTATUS[0]}
 
           if [ $EXIT_CODE -ne 0 ]; then
             echo "=== ❌ 构建失败 (退出码: $EXIT_CODE) ==="
-
-            # 1. 输出最后 500 行
             echo "=== 📄 日志最后 500 行 ==="
             tail -n 500 build.log
 
-            # 2. 提取关键错误行（不区分大小写）
             echo "=== 🔍 提取的关键错误行 (最多100行) ==="
-            grep -E -i "error|failed|exception|killed|clang: error|traceback|undefined reference|cannot find" \
+            grep -E -i "error|failed|exception|killed|clang: error|traceback|undefined reference|cannot find|implicit" \
                  build.log | head -n 100 || echo "⚠️ 未找到常见错误关键词"
 
-            # 3. 保存错误摘要到文件（用于上传 artifact）
-            grep -E -i "error|failed|exception|killed|clang: error|traceback|undefined reference|cannot find" \
+            grep -E -i "error|failed|exception|killed|clang: error|traceback|undefined reference|cannot find|implicit" \
                  build.log > error_summary.txt || echo "未找到错误" > error_summary.txt
 
-            # 4. 将摘要写入 GitHub Step Summary（在 Actions 页面直接显示）
             echo "### ❌ 构建失败 - 错误摘要" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             cat error_summary.txt >> $GITHUB_STEP_SUMMARY
@@ -126,7 +135,7 @@ jobs:
             ls -la bin/*.apk || echo "⚠️ 未找到 APK 文件"
           fi
 
-      # 上传 APK（仅成功）
+      # ---------- 上传产物 ----------
       - name: Upload APK
         if: success() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
@@ -135,7 +144,6 @@ jobs:
           path: bin/*.apk
           if-no-files-found: error
 
-      # 上传完整构建日志（总是）
       - name: Upload full build log
         if: always()
         uses: actions/upload-artifact@v4
@@ -143,7 +151,6 @@ jobs:
           name: build-log-${{ github.run_id }}
           path: build.log
 
-      # 上传错误摘要（仅当构建失败）
       - name: Upload error summary
         if: failure() && steps.build.outcome == 'failure'
         uses: actions/upload-artifact@v4
