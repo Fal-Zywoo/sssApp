@@ -77,7 +77,7 @@ jobs:
           echo "CFLAGS=-Wno-error=implicit-function-declaration" >> $GITHUB_ENV
           echo "CXXFLAGS=-Wno-error=implicit-function-declaration" >> $GITHUB_ENV
 
-      # ---------- 其余 Buildozer 相关步骤 ----------
+      # ---------- Buildozer 安装 ----------
       - name: Install Buildozer
         run: |
           pip install buildozer
@@ -86,6 +86,7 @@ jobs:
         run: |
           echo "from setuptools import setup; setup(name='solarapp')" > setup.py
 
+      # ---------- 缓存管理 ----------
       - name: Restore buildozer cache
         uses: actions/cache@v4
         id: cache-buildozer
@@ -102,13 +103,43 @@ jobs:
           echo "🧹 清理旧构建目录（可能含有旧 NDK 产物）..."
           rm -rf .buildozer/android/platform/build-*
 
+      # ========== 新增：手动安装 Android SDK 平台 31 ==========
+      - name: Setup Android SDK with platform 31
+        run: |
+          # 1. 下载并解压 commandlinetools
+          mkdir -p $HOME/android-sdk
+          cd $HOME/android-sdk
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+          unzip -q cmdline-tools.zip -d cmdline-tools
+          mv cmdline-tools/cmdline-tools cmdline-tools/latest
+          # 2. 设置环境变量（供 Buildozer 使用）
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+          # 3. 接受许可证并安装 platform 31 和 build-tools
+          yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses
+          $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-31" "build-tools;31.0.0"
+          # 4. 删除 Buildozer 可能下载的旧 SDK 以免冲突
+          rm -rf ~/.buildozer/android/platform/android-sdk
+          # 5. 验证安装
+          $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --list | grep 'platforms;android-31'
+
+      # ========== 新增：手动安装 Android NDK r25b 并设置路径 ==========
+      - name: Setup Android NDK r25b
+        run: |
+          mkdir -p $HOME/android-ndk
+          cd $HOME/android-ndk
+          wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+          unzip -q android-ndk-r25b-linux.zip
+          echo "ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r25b" >> $GITHUB_ENV
+          # 删除 Buildozer 可能下载的旧 NDK
+          rm -rf ~/.buildozer/android/platform/android-ndk-*
+
       # ---------- 核心构建步骤（增强错误提取 + 详细日志） ----------
       - name: Build APK with verbose logging
         id: build
         run: |
           BUILD_CMD="buildozer -v android ${{ inputs.build_type }}"
           echo "🔨 执行命令: $BUILD_CMD"
-          # 将日志同时输出到终端和文件，且设置 log_level=2（在 spec 中已有）
           $BUILD_CMD 2>&1 | tee build.log
           EXIT_CODE=${PIPESTATUS[0]}
 
