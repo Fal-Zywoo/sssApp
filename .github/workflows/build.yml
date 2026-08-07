@@ -132,8 +132,8 @@ jobs:
           # ---- 5. 回到工作目录（确保在仓库根目录） ----
           cd $GITHUB_WORKSPACE
 
-          # ---- 6. 执行构建，并明确指定 spec 文件 ----
-          BUILD_CMD="buildozer --spec buildozer.spec -v android ${{ inputs.build_type }}"
+          # ---- 6. 执行构建（默认读取当前目录的 buildozer.spec） ----
+          BUILD_CMD="buildozer -v android ${{ inputs.build_type }}"
           echo "🔨 执行命令: $BUILD_CMD"
           $BUILD_CMD 2>&1 | tee build.log
           EXIT_CODE=${PIPESTATUS[0]}
