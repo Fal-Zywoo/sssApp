@@ -520,48 +520,36 @@ class MainScreen(BoxLayout):
 # -------- App 类（增强字体加载）-------
 class SolarApp(App):
     def build(self):
-        # ---------- 增强的中文字体加载 ----------
-        # 尝试多种可能路径
-        possible_paths = [
-            'fonts/NotoSansCJKsc-Regular.otf',          # 正确路径（不带 assets/）
-            'assets/fonts/NotoSansCJKsc-Regular.otf',   # 兼容旧写法
-            'NotoSansCJKsc-Regular.otf',                # 直接放在根目录
-        ]
-        font_loaded = False
-        for path in possible_paths:
-            font_file = resource_find(path)
-            if font_file:
-                try:
-                    LabelBase.register(name='Chinese', fn_regular=font_file)
-                    Config.set('kivy', 'default_font', ['Chinese', 'data/fonts/DejaVuSans.ttf'])
-                    print(f"✅ 字体加载成功: {font_file}")
-                    font_loaded = True
-                    break
-                except Exception as e:
-                    print(f"⚠️ 注册字体失败 ({path}): {e}")
+    # ---------- 极简且稳妥的字体处理 ----------
+    try:
+        # 在 Android 上，系统一定有中文字体，直接注册通用名称
+        # 最常见的安卓中文字体是 DroidSansFallback.ttf
+        # 但不同版本名称不同，我们直接设置默认字体为 sans-serif（系统会映射到中文字体）
+        from kivy.core.text import LabelBase
+        from kivy.config import Config
 
-        if not font_loaded:
-            # 降级方案：尝试使用系统默认中文字体（仅限 Android）
-            print("⚠️ 自定义字体未找到，尝试使用系统字体...")
-            try:
-                # Android 通常有 DroidSansFallback
-                LabelBase.register(name='Chinese', fn_regular='DroidSansFallback.ttf')
-                Config.set('kivy', 'default_font', ['Chinese', 'data/fonts/DejaVuSans.ttf'])
-                print("✅ 使用系统降级字体 DroidSansFallback")
-            except:
-                print("❌ 无可用中文字体，中文将显示为方块")
-                # 最后保底：使用 Kivy 默认字体（英文）
-                Config.set('kivy', 'default_font', ['data/fonts/DejaVuSans.ttf'])
+        # 方法1：尝试注册 DroidSansFallback（大部分安卓设备都有）
+        try:
+            LabelBase.register(name='Chinese', fn_regular='DroidSansFallback.ttf')
+            Config.set('kivy', 'default_font', ['Chinese', 'data/fonts/DejaVuSans.ttf'])
+            print("✅ 使用系统字体 DroidSansFallback")
+        except:
+            # 方法2：直接使用系统默认字体（无需注册），Kivy 会回退到系统字体
+            # 设置默认字体为 Roboto（系统字体），它会自动支持中文
+            Config.set('kivy', 'default_font', ['Roboto', 'data/fonts/DejaVuSans.ttf'])
+            print("✅ 使用系统默认字体 Roboto")
 
-        # 强制刷新 Kivy 配置（对已有 Label 生效）
+        # 强制刷新字体缓存
         from kivy.core.text import Label as CoreLabel
         CoreLabel._font_cache.clear()
-        # --------------------------------------------
+    except Exception as e:
+        print(f"⚠️ 字体设置失败，使用Kivy默认：{e}")
+    # --------------------------------------------
 
-        self.token = None
-        self.server_url = None
-        self.login_screen = LoginScreen(self)
-        return self.login_screen
+    self.token = None
+    self.server_url = None
+    self.login_screen = LoginScreen(self)
+    return self.login_screen
 
     def show_main_screen(self):
         self.main_screen = MainScreen(self)
