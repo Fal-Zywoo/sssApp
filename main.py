@@ -517,29 +517,45 @@ class MainScreen(BoxLayout):
                       size_hint=(0.8, 0.4))
         popup.open()
 
-# -------- App 类 --------
+# -------- App 类（增强字体加载）-------
 class SolarApp(App):
     def build(self):
-        # ---------- 安全加载中文字体（修正后）----------
-        # 使用 resource_find 查找 assets 中的字体文件，路径不需要 assets/ 前缀
-        font_path = resource_find('fonts/NotoSansCJKsc-Regular.otf')
-        if font_path:
+        # ---------- 增强的中文字体加载 ----------
+        # 尝试多种可能路径
+        possible_paths = [
+            'fonts/NotoSansCJKsc-Regular.otf',          # 正确路径（不带 assets/）
+            'assets/fonts/NotoSansCJKsc-Regular.otf',   # 兼容旧写法
+            'NotoSansCJKsc-Regular.otf',                # 直接放在根目录
+        ]
+        font_loaded = False
+        for path in possible_paths:
+            font_file = resource_find(path)
+            if font_file:
+                try:
+                    LabelBase.register(name='Chinese', fn_regular=font_file)
+                    Config.set('kivy', 'default_font', ['Chinese', 'data/fonts/DejaVuSans.ttf'])
+                    print(f"✅ 字体加载成功: {font_file}")
+                    font_loaded = True
+                    break
+                except Exception as e:
+                    print(f"⚠️ 注册字体失败 ({path}): {e}")
+
+        if not font_loaded:
+            # 降级方案：尝试使用系统默认中文字体（仅限 Android）
+            print("⚠️ 自定义字体未找到，尝试使用系统字体...")
             try:
-                LabelBase.register(name='Chinese', fn_regular=font_path)
-                Config.set('kivy', 'default_font', ['Chinese', 'data/fonts/DejaVuSans.ttf'])
-                print("✅ 中文字体加载成功")
-            except Exception as e:
-                print(f"⚠️ 字体注册失败: {e}")
-        else:
-            print("⚠️ 未找到中文字体，尝试使用系统默认中文字体")
-            # 降级方案：尝试注册常见系统字体名（部分设备有效）
-            try:
-                # 某些安卓系统自带 DroidSansFallback
+                # Android 通常有 DroidSansFallback
                 LabelBase.register(name='Chinese', fn_regular='DroidSansFallback.ttf')
                 Config.set('kivy', 'default_font', ['Chinese', 'data/fonts/DejaVuSans.ttf'])
-                print("✅ 使用系统降级字体")
+                print("✅ 使用系统降级字体 DroidSansFallback")
             except:
-                print("⚠️ 无可用中文字体，中文可能显示为方块")
+                print("❌ 无可用中文字体，中文将显示为方块")
+                # 最后保底：使用 Kivy 默认字体（英文）
+                Config.set('kivy', 'default_font', ['data/fonts/DejaVuSans.ttf'])
+
+        # 强制刷新 Kivy 配置（对已有 Label 生效）
+        from kivy.core.text import Label as CoreLabel
+        CoreLabel._font_cache.clear()
         # --------------------------------------------
 
         self.token = None
