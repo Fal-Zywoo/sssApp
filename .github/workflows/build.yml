@@ -1,11 +1,27 @@
-name: Build APK
+name: Build Kivy APK
 
 on:
   workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type (debug / release)'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+      clean_cache:
+        description: 'Force clean build cache (NDK/sdk)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 360   # 6 hours max
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -15,7 +31,14 @@ jobs:
         with:
           python-version: '3.9'
 
-      # 增加 swap 空间（防止内存不足）
+      # 如果勾选“强制清理缓存”，则删除整个 .buildozer 目录
+      - name: Force clean buildozer cache
+        if: inputs.clean_cache == true
+        run: |
+          echo "🧹 强制清理所有构建缓存..."
+          rm -rf .buildozer
+
+      # 增加 swap 空间（防止内存不足导致编译被 kill）
       - name: Increase swap space
         run: |
           sudo swapoff -a || true
@@ -26,6 +49,7 @@ jobs:
           sudo swapon /swapfile
           free -h
 
+      # 安装系统级依赖
       - name: Install system dependencies
         run: |
           sudo apt update
@@ -38,44 +62,74 @@ jobs:
       - name: Set JAVA_HOME to Java 17
         run: echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
 
-      # 清除可能冲突的 Android 环境变量
+      # 清除可能冲突的 Android 环境变量（避免系统 NDK 干扰）
       - name: Unset conflicting Android environment variables
         run: |
           unset ANDROID_NDK ANDROID_NDK_HOME ANDROID_NDK_ROOT ANDROID_HOME ANDROID_SDK_ROOT
-          echo "已清除冲突的环境变量"
+          echo "✅ 已清除冲突的 Android 环境变量"
 
+      # 安装 Buildozer 和 cython
       - name: Install Buildozer
         run: |
           pip install --upgrade pip
           pip install buildozer cython
 
-      - name: Create setup.py (avoid Buildozer warning)
+      # 创建 setup.py 避免 Buildozer 警告（可选）
+      - name: Create setup.py
         run: |
           echo "from setuptools import setup; setup(name='solarapp')" > setup.py
 
+      # 恢复缓存（如果存在）—— 缓存整个 .buildozer 目录
+      - name: Restore buildozer cache
+        uses: actions/cache@v4
+        id: cache-buildozer
+        with:
+          path: .buildozer
+          # 缓存键包含 NDK 版本（从 spec 中提取）和 hash 文件变化
+          key: buildozer-${{ runner.os }}-ndk25b-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-${{ runner.os }}-ndk25b-
+            buildozer-${{ runner.os }}-
+
+      # 如果缓存恢复失败或强制清理，则构建前删除旧的构建目录（防止 NDK 残留）
+      - name: Clean old build artifacts (if cache miss)
+        if: steps.cache-buildozer.outputs.cache-hit != 'true' || inputs.clean_cache == true
+        run: |
+          echo "🧹 清理旧构建目录（可能含有旧 NDK 产物）..."
+          rm -rf .buildozer/android/platform/build-*
+          # 可选：删除旧 NDK 目录（但一般不需要，因为缓存键已区分）
+          # rm -rf .buildozer/android/platform/android-ndk-r23c
+
+      # 构建 APK（根据输入选择 debug 或 release）
       - name: Build APK with verbose logging
         id: build
         run: |
-          # 使用 -v 输出详细日志，并捕获所有输出
-          buildozer -v android debug 2>&1 | tee build.log
-          # 检查退出码
+          BUILD_CMD="buildozer -v android ${{ inputs.build_type }}"
+          echo "🔨 执行命令: $BUILD_CMD"
+          $BUILD_CMD 2>&1 | tee build.log
+          # 捕获退出码
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "=== ❌ 构建失败，以下是日志最后 500 行 ==="
             tail -n 500 build.log
             exit 1
           fi
           echo "✅ 构建成功！"
+          # 显示生成的 APK 文件
+          ls -la bin/*.apk || echo "⚠️ 未找到 APK 文件"
 
-      - name: Upload APK (if successful)
-        if: success()
+      # 上传 APK（仅当构建成功）
+      - name: Upload APK
+        if: success() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: solar-collector-apk
+          name: solar-collector-${{ inputs.build_type }}
           path: bin/*.apk
+          if-no-files-found: error
 
-      - name: Upload build log (always)
+      # 无论成败，上传构建日志
+      - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
+          name: build-log-${{ github.run_id }}
           path: build.log
