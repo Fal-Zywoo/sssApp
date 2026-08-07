@@ -1,0 +1,81 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      # 增加 swap 空间（防止内存不足）
+      - name: Increase swap space
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Install system dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            git zip unzip openjdk-17-jdk \
+            python3-pip autoconf libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 \
+            cmake libffi-dev libssl-dev
+
+      - name: Set JAVA_HOME to Java 17
+        run: echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
+
+      # 清除可能冲突的 Android 环境变量
+      - name: Unset conflicting Android environment variables
+        run: |
+          unset ANDROID_NDK ANDROID_NDK_HOME ANDROID_NDK_ROOT ANDROID_HOME ANDROID_SDK_ROOT
+          echo "已清除冲突的环境变量"
+
+      - name: Install Buildozer
+        run: |
+          pip install --upgrade pip
+          pip install buildozer cython
+
+      - name: Create setup.py (avoid Buildozer warning)
+        run: |
+          echo "from setuptools import setup; setup(name='solarapp')" > setup.py
+
+      - name: Build APK with verbose logging
+        id: build
+        run: |
+          # 使用 -v 输出详细日志，并捕获所有输出
+          buildozer -v android debug 2>&1 | tee build.log
+          # 检查退出码
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "=== ❌ 构建失败，以下是日志最后 500 行 ==="
+            tail -n 500 build.log
+            exit 1
+          fi
+          echo "✅ 构建成功！"
+
+      - name: Upload APK (if successful)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: solar-collector-apk
+          path: bin/*.apk
+
+      - name: Upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
