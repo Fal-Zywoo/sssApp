@@ -520,9 +520,9 @@ class MainScreen(BoxLayout):
 # -------- App 类 --------
 class SolarApp(App):
     def build(self):
-        # ---------- 安全加载中文字体 ----------
-        # 使用 resource_find 转换 assets 路径为实际文件系统路径
-        font_path = resource_find('assets/fonts/NotoSansCJKsc-Regular.otf')
+        # ---------- 安全加载中文字体（修正后）----------
+        # 使用 resource_find 查找 assets 中的字体文件，路径不需要 assets/ 前缀
+        font_path = resource_find('fonts/NotoSansCJKsc-Regular.otf')
         if font_path:
             try:
                 LabelBase.register(name='Chinese', fn_regular=font_path)
@@ -531,10 +531,16 @@ class SolarApp(App):
             except Exception as e:
                 print(f"⚠️ 字体注册失败: {e}")
         else:
-            print("⚠️ 未找到中文字体，将使用系统默认字体")
-            # 可选的降级方案：尝试使用系统内置中文字体（部分设备有效）
-            # Config.set('kivy', 'default_font', ['DroidSansFallback.ttf', 'NotoSansCJK-Regular.ttc'])
-        # ------------------------------------
+            print("⚠️ 未找到中文字体，尝试使用系统默认中文字体")
+            # 降级方案：尝试注册常见系统字体名（部分设备有效）
+            try:
+                # 某些安卓系统自带 DroidSansFallback
+                LabelBase.register(name='Chinese', fn_regular='DroidSansFallback.ttf')
+                Config.set('kivy', 'default_font', ['Chinese', 'data/fonts/DejaVuSans.ttf'])
+                print("✅ 使用系统降级字体")
+            except:
+                print("⚠️ 无可用中文字体，中文可能显示为方块")
+        # --------------------------------------------
 
         self.token = None
         self.server_url = None
