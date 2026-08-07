@@ -72,37 +72,42 @@ jobs:
       # ----- 手动安装 Android SDK Platform 31 -----
       - name: Setup Android SDK with platform 31
         run: |
-          # 1. 下载 commandlinetools（使用稳定版本）
+          # 创建 SDK 根目录
           mkdir -p $HOME/android-sdk
           cd $HOME/android-sdk
+      
+          # 下载 commandlinetools（使用稳定版本）
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-6514223_latest.zip -O cmdline-tools.zip
-          unzip -q cmdline-tools.zip -d cmdline-tools
-          mv cmdline-tools/cmdline-tools cmdline-tools/latest
-          
-          # 2. 设置环境变量
+      
+          # 解压到临时目录，再移到最终位置（避免目录嵌套问题）
+          unzip -q cmdline-tools.zip -d cmdline-tools-temp
+          mkdir -p cmdline-tools/latest
+          mv cmdline-tools-temp/* cmdline-tools/latest/
+          rm -rf cmdline-tools-temp
+      
+          # 设置环境变量
           echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
           echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-          
-          # 3. 接受许可证并安装 platform 31 和 build-tools
+      
+          # 接受许可证并安装 platform 31 和 build-tools
           yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses
           $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-31" "build-tools;31.0.0"
-          
-          # 4. 删除 Buildozer 可能下载的旧 SDK 以免冲突（可选）
+      
+          # 删除 Buildozer 可能下载的旧 SDK 以免冲突
           rm -rf ~/.buildozer/android/platform/android-sdk
-          
-          # 5. 验证安装
+      
+          # 验证安装
           $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --list | grep 'platforms;android-31'
-
-      # ----- 手动安装 Android NDK r25b -----
-      - name: Setup Android NDK r25b
-        run: |
-          mkdir -p $HOME/android-ndk
-          cd $HOME/android-ndk
-          wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
-          unzip -q android-ndk-r25b-linux.zip
-          echo "ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r25b" >> $GITHUB_ENV
-          # 删除 Buildozer 可能下载的旧 NDK 以免冲突
-          rm -rf ~/.buildozer/android/platform/android-ndk-*
+            # ----- 手动安装 Android NDK r25b -----
+            - name: Setup Android NDK r25b
+              run: |
+                mkdir -p $HOME/android-ndk
+                cd $HOME/android-ndk
+                wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+                unzip -q android-ndk-r25b-linux.zip
+                echo "ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r25b" >> $GITHUB_ENV
+                # 删除 Buildozer 可能下载的旧 NDK 以免冲突
+                rm -rf ~/.buildozer/android/platform/android-ndk-*
 
       # ----- 恢复缓存（可选，加速后续构建） -----
       - name: Restore buildozer cache
