@@ -534,6 +534,15 @@ class MainScreen(BoxLayout):
 
 # -------- App --------
 class SolarApp(App):
+
+from kivy.core.text import LabelBase
+from kivy.config import Config
+
+# 注册中文字体
+LabelBase.register(name='Chinese', fn_regular='assets/fonts/NotoSansCJKsc-Regular.otf')
+
+# 设置全局默认字体（务必在 Kivy 实例化前设置，但这里 build() 中已经实例化，可能不生效）
+# 更可靠的方式是在 build() 之前设置，但为了简化，可以单独对每个 Label 指定 font_name
     def build(self):
         self.token = None
         self.server_url = None
