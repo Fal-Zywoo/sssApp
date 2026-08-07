@@ -62,7 +62,7 @@ jobs:
           pip install --upgrade pip
           pip install buildozer cython
 
-      # ----- 缓存管理 -----
+      # ----- 缓存管理（保留 .buildozer 目录）-----
       - name: Restore buildozer cache
         uses: actions/cache@v4
         id: cache-buildozer
@@ -77,21 +77,46 @@ jobs:
         if: steps.cache-buildozer.outputs.cache-hit != 'true' || inputs.clean_cache == true
         run: rm -rf .buildozer/android/platform/build-*
 
-      # ----- 核心构建步骤（强制清除系统 Android 环境变量）-----
+      # ----- 核心构建步骤（强制使用 Buildozer 自己的 SDK 并保证 API 31）-----
       - name: Build APK with verbose logging
         id: build
         run: |
-          # 清除所有可能干扰的系统 Android 环境变量
-          unset ANDROID_HOME ANDROID_SDK_ROOT ANDROID_NDK ANDROID_NDK_HOME ANDROID_NDK_ROOT
+          # 1. 强制指定 Buildozer 使用的 SDK 路径（与 Buildozer 默认路径一致）
+          export ANDROID_HOME="$HOME/.buildozer/android/platform/android-sdk"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          # 清除系统级 Android 环境变量（当前 shell 有效）
+          unset ANDROID_NDK ANDROID_NDK_HOME ANDROID_NDK_ROOT
 
-          # 让 Buildozer 使用自己的默认 SDK 路径（~/.buildozer/android/platform/android-sdk）
-          # 无需额外设置，Buildozer 会自动处理
+          # 2. 确保 SDK 目录存在
+          mkdir -p "$ANDROID_HOME"
 
+          # 3. 检查 API 31 是否已安装，若未安装则自动安装
+          if [ ! -d "$ANDROID_HOME/platforms/android-31" ]; then
+            echo "⚠️ API 31 未找到，开始安装（可能需要几分钟）..."
+            # 创建 cmdline-tools 标准目录
+            mkdir -p "$ANDROID_HOME/cmdline-tools"
+            cd "$ANDROID_HOME/cmdline-tools"
+            # 下载最新 commandlinetools（2024 版）
+            wget -q --show-progress https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+            unzip -q cmdline-tools.zip
+            mv cmdline-tools latest
+            export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+            # 接受所有许可证（静默）
+            yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses > /dev/null 2>&1 || true
+            # 安装 API 31 和 build-tools 31.0.0
+            sdkmanager --sdk_root="$ANDROID_HOME" "platforms;android-31" "build-tools;31.0.0"
+            echo "✅ API 31 安装完成"
+          else
+            echo "✅ API 31 已存在，跳过安装"
+          fi
+
+          # 4. 执行 Buildozer 构建
           BUILD_CMD="buildozer -v android ${{ inputs.build_type }}"
           echo "🔨 执行命令: $BUILD_CMD"
           $BUILD_CMD 2>&1 | tee build.log
           EXIT_CODE=${PIPESTATUS[0]}
 
+          # 5. 处理构建结果
           if [ $EXIT_CODE -ne 0 ]; then
             echo "=== ❌ 构建失败 (退出码: $EXIT_CODE) ==="
             echo "=== 📄 日志最后 500 行 ==="
