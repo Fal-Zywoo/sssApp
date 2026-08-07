@@ -41,7 +41,7 @@ version = 1.0.0
 # version.filename = %(source.dir)s/main.py
 
 # (list) Application requirements
-# 包含所有必需的库
+# 使用 python3 让 p4a 自动选择稳定版本（通常为3.9/3.8）
 requirements = python3,kivy,requests,geopy,pyjwt,setuptools
 
 # (str) Custom source folders for requirements
@@ -102,7 +102,6 @@ fullscreen = 0
 #icon.adaptive_background.filename = %(source.dir)s/data/icon_bg.png
 
 # (list) Permissions
-# 添加必要的权限：网络、存储
 android.permissions = INTERNET, ACCESS_NETWORK_STATE, WRITE_EXTERNAL_STORAGE, READ_EXTERNAL_STORAGE
 
 # (list) features (adds uses-feature -tags to manifest)
@@ -118,18 +117,17 @@ android.minapi = 24
 android.sdk = 30
 
 # (str) Android NDK version to use
-android.ndk = 25b
+# 使用更稳定的 23c 版本
+android.ndk = 23c
 
 # (int) Android NDK API to use. This is the minimum API your app will support, it should usually match android.minapi.
 android.ndk_api = 24
 
 # (str) Android NDK directory (if empty, it will be automatically downloaded.)
-# 如果你已有NDK路径，可以指定，否则让Buildozer自动下载
-#android.ndk_path = /mnt/c/android/ndk/android-ndk-r21e
+#android.ndk_path = 
 
 # (str) Android SDK directory (if empty, it will be automatically downloaded.)
-# 同理，可以指定已有SDK路径
-#android.sdk_path = /mnt/c/android/sdk
+#android.sdk_path = 
 
 # (str) ANT directory (if empty, it will be automatically downloaded.)
 #android.ant_path =
@@ -196,8 +194,7 @@ android.accept_sdk_license = True
 # Either form may be used, and assets need not be in 'source.include_exts'.
 # 1) android.add_assets = source_asset_relative_path
 # 2) android.add_assets = source_asset_path:destination_asset_relative_path
-# 我们指定 assets 目录（包含字体等）
-# android.add_assets = assets
+android.add_assets = assets
 
 # (list) Put these files or directories in the apk res directory.
 # The option may be used in three ways, the value may contain one or zero ':'
@@ -293,7 +290,6 @@ android.accept_sdk_license = True
 #android.copy_libs = 1
 
 # (list) The Android archs to build for, choices: armeabi-v7a, arm64-v8a, x86, x86_64
-# In past, was `android.arch` as we weren't supporting builds for multiple archs at the same time.
 android.archs = arm64-v8a
 
 # (int) overrides automatic versionCode computation (used in build.gradle)
@@ -347,7 +343,8 @@ android.allow_backup = True
 #p4a.source_dir =
 
 # (str) The directory in which python-for-android should look for your own build recipes (if any)
-# p4a.local_recipes = /home/a1711/solar_app/my_recipes
+# 已注释掉无效的本地路径，如有自定义 recipe 请放置到项目下的 recipes 目录并在此指定
+# p4a.local_recipes = 
 
 # (str) Filename to the hook for p4a
 #p4a.hook =
