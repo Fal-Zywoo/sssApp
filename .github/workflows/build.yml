@@ -1,4 +1,5 @@
 name: Build Kivy APK
+
 on:
   workflow_dispatch:
     inputs:
@@ -30,10 +31,11 @@ jobs:
         with:
           python-version: '3.9'
 
-      # 可选：如果勾选 clean_cache，则删除 .buildozer 目录
       - name: Force clean buildozer cache
         if: inputs.clean_cache == true
-        run: rm -rf .buildozer
+        run: |
+          echo "🧹 强制清理所有构建缓存..."
+          rm -rf .buildozer
 
       - name: Increase swap space
         run: |
@@ -57,59 +59,60 @@ jobs:
       - name: Set JAVA_HOME to Java 17
         run: echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
 
-      # ----- 清除可能冲突的 Android 环境变量（防止干扰） -----
       - name: Unset conflicting Android environment variables
         run: |
           unset ANDROID_NDK ANDROID_NDK_HOME ANDROID_NDK_ROOT ANDROID_HOME ANDROID_SDK_ROOT
           echo "✅ 已清除冲突的 Android 环境变量"
 
-      # ----- 安装 Buildozer 和 Cython -----
       - name: Install Buildozer and Cython
         run: |
           pip install --upgrade pip
           pip install buildozer cython
 
-      # ----- 手动安装 Android SDK Platform 31 -----
+      # ----- 手动安装 Android SDK Platform 31（修复版）-----
       - name: Setup Android SDK with platform 31
         run: |
           # 创建 SDK 根目录
           mkdir -p $HOME/android-sdk
           cd $HOME/android-sdk
-      
-          # 下载 commandlinetools（使用稳定版本）
+
+          # 下载 commandlinetools
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-6514223_latest.zip -O cmdline-tools.zip
-      
-          # 解压到临时目录，再移到最终位置（避免目录嵌套问题）
+
+          # 解压到临时目录，并处理可能的嵌套
           unzip -q cmdline-tools.zip -d cmdline-tools-temp
-          mkdir -p cmdline-tools/latest
-          mv cmdline-tools-temp/* cmdline-tools/latest/
-          rm -rf cmdline-tools-temp
-      
+          if [ -d cmdline-tools-temp/cmdline-tools ]; then
+            mv cmdline-tools-temp/cmdline-tools/* cmdline-tools-temp/
+            rmdir cmdline-tools-temp/cmdline-tools
+          fi
+          mv cmdline-tools-temp cmdline-tools
+
           # 设置环境变量
           echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
           echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-      
-          # 接受许可证并安装 platform 31 和 build-tools
-          yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses
-          $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-31" "build-tools;31.0.0"
-      
-          # 删除 Buildozer 可能下载的旧 SDK 以免冲突
-          rm -rf ~/.buildozer/android/platform/android-sdk
-      
-          # 验证安装
-          $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --list | grep 'platforms;android-31'
-            # ----- 手动安装 Android NDK r25b -----
-            - name: Setup Android NDK r25b
-              run: |
-                mkdir -p $HOME/android-ndk
-                cd $HOME/android-ndk
-                wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
-                unzip -q android-ndk-r25b-linux.zip
-                echo "ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r25b" >> $GITHUB_ENV
-                # 删除 Buildozer 可能下载的旧 NDK 以免冲突
-                rm -rf ~/.buildozer/android/platform/android-ndk-*
 
-      # ----- 恢复缓存（可选，加速后续构建） -----
+          # 接受许可证并安装 platform 31
+          echo y | $HOME/android-sdk/cmdline-tools/bin/sdkmanager --licenses > /dev/null 2>&1
+          $HOME/android-sdk/cmdline-tools/bin/sdkmanager "platforms;android-31" "build-tools;31.0.0"
+
+          # 删除 Buildozer 可能下载的旧 SDK
+          rm -rf ~/.buildozer/android/platform/android-sdk
+
+          # 验证安装
+          $HOME/android-sdk/cmdline-tools/bin/sdkmanager --list | grep 'platforms;android-31'
+
+      # ----- 手动安装 Android NDK r25b -----
+      - name: Setup Android NDK r25b
+        run: |
+          mkdir -p $HOME/android-ndk
+          cd $HOME/android-ndk
+          wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+          unzip -q android-ndk-r25b-linux.zip
+          echo "ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r25b" >> $GITHUB_ENV
+          # 删除 Buildozer 可能下载的旧 NDK
+          rm -rf ~/.buildozer/android/platform/android-ndk-*
+
+      # ----- 缓存（可选，加速后续构建）-----
       - name: Restore buildozer cache
         uses: actions/cache@v4
         id: cache-buildozer
@@ -120,14 +123,13 @@ jobs:
             buildozer-${{ runner.os }}-ndk25b-
             buildozer-${{ runner.os }}-
 
-      # 如果缓存未命中或强制清理，则清理旧的构建目录
       - name: Clean old build artifacts (if cache miss)
         if: steps.cache-buildozer.outputs.cache-hit != 'true' || inputs.clean_cache == true
         run: |
           echo "🧹 清理旧构建目录（可能含有旧 NDK 产物）..."
           rm -rf .buildozer/android/platform/build-*
 
-      # ----- 核心构建步骤（添加详细的错误提取） -----
+      # ----- 核心构建步骤（带错误提取）-----
       - name: Build APK with verbose logging
         id: build
         run: |
