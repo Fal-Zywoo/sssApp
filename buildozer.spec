@@ -19,7 +19,6 @@ android.ndk = 25b
 android.ndk_path = /home/runner/.buildozer/android/platform/android-ndk-r23c
 android.ndk_api = 24
 android.accept_sdk_license = True
-android.add_assets = assets
 android.archs = arm64-v8a
 android.allow_backup = True
 
