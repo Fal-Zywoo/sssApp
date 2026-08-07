@@ -1,7 +1,27 @@
+name: Build Kivy APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type (debug / release)'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+      clean_cache:
+        description: 'Force clean build cache (NDK/sdk)'
+        required: false
+        default: false
+        type: boolean
+
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -37,6 +57,7 @@ jobs:
       - name: Set JAVA_HOME to Java 17
         run: echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
 
+      # 关键：清除任何可能干扰 Buildozer 自动下载 SDK/NDK 的环境变量
       - name: Unset conflicting Android environment variables
         run: |
           unset ANDROID_NDK ANDROID_NDK_HOME ANDROID_NDK_ROOT ANDROID_HOME ANDROID_SDK_ROOT
@@ -47,7 +68,7 @@ jobs:
           pip install --upgrade pip
           pip install buildozer cython
 
-      # 可选：恢复缓存（仅 .buildozer 目录）
+      # ----- 缓存管理（加速后续构建）-----
       - name: Restore buildozer cache
         uses: actions/cache@v4
         id: cache-buildozer
@@ -56,9 +77,59 @@ jobs:
           key: buildozer-${{ runner.os }}-ndk25b-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
             buildozer-${{ runner.os }}-ndk25b-
+            buildozer-${{ runner.os }}-
 
+      - name: Clean old build artifacts (if cache miss)
+        if: steps.cache-buildozer.outputs.cache-hit != 'true' || inputs.clean_cache == true
+        run: rm -rf .buildozer/android/platform/build-*
+
+      # ----- 核心构建步骤（Buildozer 会自动下载所需的 SDK/NDK）-----
       - name: Build APK with verbose logging
         id: build
         run: |
-          buildozer -v android ${{ inputs.build_type }} 2>&1 | tee build.log
-          # 检查结果...
+          BUILD_CMD="buildozer -v android ${{ inputs.build_type }}"
+          echo "🔨 执行命令: $BUILD_CMD"
+          $BUILD_CMD 2>&1 | tee build.log
+          EXIT_CODE=${PIPESTATUS[0]}
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "=== ❌ 构建失败 (退出码: $EXIT_CODE) ==="
+            echo "=== 📄 日志最后 500 行 ==="
+            tail -n 500 build.log
+            echo "=== 🔍 提取的关键错误行 (最多100行) ==="
+            grep -E -i "error|failed|exception|killed|clang: error|traceback|undefined reference|cannot find|implicit" \
+                 build.log | head -n 100 || echo "⚠️ 未找到常见错误关键词"
+            grep -E -i "error|failed|exception|killed|clang: error|traceback|undefined reference|cannot find|implicit" \
+                 build.log > error_summary.txt || echo "未找到错误" > error_summary.txt
+            echo "### ❌ 构建失败 - 错误摘要" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat error_summary.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit $EXIT_CODE
+          else
+            echo "✅ 构建成功！"
+            ls -la bin/*.apk || echo "⚠️ 未找到 APK 文件"
+          fi
+
+      # ----- 上传产物 -----
+      - name: Upload APK
+        if: success() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: solar-collector-${{ inputs.build_type }}
+          path: bin/*.apk
+          if-no-files-found: error
+
+      - name: Upload full build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_id }}
+          path: build.log
+
+      - name: Upload error summary
+        if: failure() && steps.build.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-summary
+          path: error_summary.txt
