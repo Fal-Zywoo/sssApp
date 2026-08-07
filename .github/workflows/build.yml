@@ -62,7 +62,7 @@ jobs:
           pip install --upgrade pip
           pip install buildozer cython
 
-      # ----- 缓存管理（保留 .buildozer 目录）-----
+      # ----- 缓存管理 -----
       - name: Restore buildozer cache
         uses: actions/cache@v4
         id: cache-buildozer
@@ -77,26 +77,45 @@ jobs:
         if: steps.cache-buildozer.outputs.cache-hit != 'true' || inputs.clean_cache == true
         run: rm -rf .buildozer/android/platform/build-*
 
-      # ----- 核心构建步骤（强制使用 Buildozer 自己的 SDK 并保证 API 31）-----
+      # ----- 核心构建步骤（含调试和自动修复）-----
       - name: Build APK with verbose logging
         id: build
         run: |
-          # 1. 强制指定 Buildozer 使用的 SDK 路径（与 Buildozer 默认路径一致）
+          # ---- 1. 调试：显示当前目录和所有文件 ----
+          echo "=== 当前工作目录 ==="
+          pwd
+          echo "=== 文件列表 ==="
+          ls -la
+          echo "=== 查找 buildozer.spec ==="
+          find . -name "buildozer.spec*"
+
+          # ---- 2. 如果当前目录没有 buildozer.spec，尝试从其他位置复制 ----
+          if [ ! -f buildozer.spec ]; then
+            echo "⚠️ 当前目录没有 buildozer.spec，尝试从仓库根目录查找..."
+            SPEC_PATH=$(find $GITHUB_WORKSPACE -name "buildozer.spec" -type f | head -1)
+            if [ -n "$SPEC_PATH" ]; then
+              echo "✅ 找到 spec 文件：$SPEC_PATH"
+              cp "$SPEC_PATH" ./buildozer.spec
+            else
+              echo "❌ 错误：找不到任何 buildozer.spec 文件，退出"
+              exit 1
+            fi
+          else
+            echo "✅ buildozer.spec 已存在于当前目录"
+          fi
+
+          # ---- 3. 强制设置 Android SDK 路径（使用 Buildozer 默认路径） ----
           export ANDROID_HOME="$HOME/.buildozer/android/platform/android-sdk"
           export ANDROID_SDK_ROOT="$ANDROID_HOME"
-          # 清除系统级 Android 环境变量（当前 shell 有效）
+          # 清除系统级的 Android 环境变量
           unset ANDROID_NDK ANDROID_NDK_HOME ANDROID_NDK_ROOT
-
-          # 2. 确保 SDK 目录存在
           mkdir -p "$ANDROID_HOME"
 
-          # 3. 检查 API 31 是否已安装，若未安装则自动安装
+          # ---- 4. 检查并安装 API 31（如果缺失） ----
           if [ ! -d "$ANDROID_HOME/platforms/android-31" ]; then
             echo "⚠️ API 31 未找到，开始安装（可能需要几分钟）..."
-            # 创建 cmdline-tools 标准目录
             mkdir -p "$ANDROID_HOME/cmdline-tools"
             cd "$ANDROID_HOME/cmdline-tools"
-            # 下载最新 commandlinetools（2024 版）
             wget -q --show-progress https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
             unzip -q cmdline-tools.zip
             mv cmdline-tools latest
@@ -110,13 +129,16 @@ jobs:
             echo "✅ API 31 已存在，跳过安装"
           fi
 
-          # 4. 执行 Buildozer 构建
-          BUILD_CMD="buildozer -v android ${{ inputs.build_type }}"
+          # ---- 5. 回到工作目录（确保在仓库根目录） ----
+          cd $GITHUB_WORKSPACE
+
+          # ---- 6. 执行构建，并明确指定 spec 文件 ----
+          BUILD_CMD="buildozer --spec buildozer.spec -v android ${{ inputs.build_type }}"
           echo "🔨 执行命令: $BUILD_CMD"
           $BUILD_CMD 2>&1 | tee build.log
           EXIT_CODE=${PIPESTATUS[0]}
 
-          # 5. 处理构建结果
+          # ---- 7. 处理构建结果 ----
           if [ $EXIT_CODE -ne 0 ]; then
             echo "=== ❌ 构建失败 (退出码: $EXIT_CODE) ==="
             echo "=== 📄 日志最后 500 行 ==="
