@@ -16,6 +16,7 @@ android.api = 30
 android.minapi = 24
 android.sdk = 30
 android.ndk = 23c
+android.ndk_path = /home/runner/.buildozer/android/platform/android-ndk-r23c
 android.ndk_api = 24
 android.accept_sdk_license = True
 android.add_assets = assets
