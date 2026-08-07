@@ -2,16 +2,36 @@
 """
 Android 光资源采集器（Kivy 版）
 无 pandas、无 matplotlib 依赖，使用 Kivy Canvas 绘图
-最后更新：2026.08.07
+最后更新：2026.08.07 - 增强稳定性
 """
 
 import os
-import re
+import sys
+import traceback
 import time
 import random
 import threading
 import csv
 from datetime import datetime
+
+# ---- 全局异常捕获（将崩溃信息写入文件） ----
+def global_exception_handler(exc_type, exc_value, exc_tb):
+    error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    # 写入外部存储（如果权限允许）
+    try:
+        log_dir = '/storage/emulated/0/Download' if os.path.exists('/storage/emulated/0') else os.path.expanduser('~/Downloads')
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, 'app_crash.log'), 'a', encoding='utf-8') as f:
+            f.write(f"\n--- Crash at {datetime.now()} ---\n{error_msg}\n")
+    except:
+        pass
+    # 打印到控制台（可能看不到）
+    print(error_msg)
+    # 调用默认处理
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+sys.excepthook = global_exception_handler
+# ---------------------------------------------
 
 import requests
 from geopy.geocoders import Nominatim
@@ -52,14 +72,14 @@ def get_public_download_dir():
     os.makedirs(download_path, exist_ok=True)
     return download_path
 
-# -------- 坐标解析 --------
+# -------- 坐标解析（增加超时和重试） --------
 def get_coordinates(address, retries=2):
     print(f"🗺️ 解析地址: {address}")
     try:
-        geolocator = Nominatim(user_agent="solar_app_android", timeout=10)
+        geolocator = Nominatim(user_agent="solar_app_android", timeout=15)
         for attempt in range(retries):
             try:
-                location = geolocator.geocode(address, timeout=10)
+                location = geolocator.geocode(address, timeout=15)
                 if location:
                     return location.latitude, location.longitude, location.address
             except Exception as e:
@@ -67,6 +87,8 @@ def get_coordinates(address, retries=2):
                 time.sleep(2)
     except ImportError:
         print("❌ geopy 未安装，请手动输入经纬度")
+    except Exception as e:
+        print(f"❌ 坐标解析异常: {e}")
     return None, None, None
 
 # -------- API 数据获取 --------
@@ -508,48 +530,51 @@ class MainScreen(BoxLayout):
         time_str = datetime.now().strftime("%m%d_%H%M")
         filename = f"光资源逐年数据_{time_str}.csv"
         filepath = os.path.join(download_dir, filename)
-        with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.DictWriter(f, fieldnames=records[0].keys())
-            writer.writeheader()
-            writer.writerows(records)
-        self._update_log(f'✅ CSV已导出: {filepath}')
-        popup = Popup(title='导出完成', content=Label(text=f'CSV已保存至\n{filepath}'),
-                      size_hint=(0.8, 0.4))
-        popup.open()
+        try:
+            with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=records[0].keys())
+                writer.writeheader()
+                writer.writerows(records)
+            self._update_log(f'✅ CSV已导出: {filepath}')
+            popup = Popup(title='导出完成', content=Label(text=f'CSV已保存至\n{filepath}'),
+                          size_hint=(0.8, 0.4))
+            popup.open()
+        except Exception as e:
+            self._update_log(f'❌ 导出失败: {e}')
 
-# -------- App 类（增强字体加载）-------
+# -------- App 类（极简且稳定的字体处理）-------
 class SolarApp(App):
     def build(self):
-    # ---------- 极简且稳妥的字体处理 ----------
-    try:
-        # 在 Android 上，系统一定有中文字体，直接注册通用名称
-        # 最常见的安卓中文字体是 DroidSansFallback.ttf
-        # 但不同版本名称不同，我们直接设置默认字体为 sans-serif（系统会映射到中文字体）
-        from kivy.core.text import LabelBase
-        from kivy.config import Config
-
-        # 方法1：尝试注册 DroidSansFallback（大部分安卓设备都有）
+        # ---------- 彻底避免自定义字体，直接使用系统字体 ----------
         try:
-            LabelBase.register(name='Chinese', fn_regular='DroidSansFallback.ttf')
-            Config.set('kivy', 'default_font', ['Chinese', 'data/fonts/DejaVuSans.ttf'])
-            print("✅ 使用系统字体 DroidSansFallback")
-        except:
-            # 方法2：直接使用系统默认字体（无需注册），Kivy 会回退到系统字体
-            # 设置默认字体为 Roboto（系统字体），它会自动支持中文
+            # 方案：强制使用系统默认字体（Android 上会自动支持中文）
+            # 不需要任何外部字体文件，也不需要注册自定义字体名
             Config.set('kivy', 'default_font', ['Roboto', 'data/fonts/DejaVuSans.ttf'])
-            print("✅ 使用系统默认字体 Roboto")
+            # 清除字体缓存
+            from kivy.core.text import Label as CoreLabel
+            CoreLabel._font_cache.clear()
+            print("✅ 使用系统字体 Roboto（支持中文）")
+        except Exception as e:
+            print(f"⚠️ 字体设置失败: {e}")
+        # --------------------------------------------
 
-        # 强制刷新字体缓存
-        from kivy.core.text import Label as CoreLabel
-        CoreLabel._font_cache.clear()
-    except Exception as e:
-        print(f"⚠️ 字体设置失败，使用Kivy默认：{e}")
-    # --------------------------------------------
+        # ---- 运行时权限申请（Android 6+） ----
+        if platform == 'android':
+            try:
+                from android.permissions import request_permissions, Permission
+                request_permissions([
+                    Permission.WRITE_EXTERNAL_STORAGE,
+                    Permission.READ_EXTERNAL_STORAGE,
+                    Permission.INTERNET
+                ])
+                print("✅ 权限已请求")
+            except Exception as e:
+                print(f"⚠️ 权限请求失败: {e}")
 
-    self.token = None
-    self.server_url = None
-    self.login_screen = LoginScreen(self)
-    return self.login_screen
+        self.token = None
+        self.server_url = None
+        self.login_screen = LoginScreen(self)
+        return self.login_screen
 
     def show_main_screen(self):
         self.main_screen = MainScreen(self)
