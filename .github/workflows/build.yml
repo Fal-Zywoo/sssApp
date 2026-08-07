@@ -1,27 +1,7 @@
-name: Build Kivy APK
-
-on:
-  workflow_dispatch:
-    inputs:
-      build_type:
-        description: 'Build type (debug / release)'
-        required: true
-        default: 'debug'
-        type: choice
-        options:
-          - debug
-          - release
-      clean_cache:
-        description: 'Force clean build cache (NDK/sdk)'
-        required: false
-        default: false
-        type: boolean
-
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -67,44 +47,7 @@ jobs:
           pip install --upgrade pip
           pip install buildozer cython
 
-      # ----- 手动安装 Android SDK Platform 31（增强版）-----
-      - name: Setup Android SDK with platform 31
-        run: |
-          set -e
-          mkdir -p $HOME/android-sdk
-          cd $HOME/android-sdk
-          wget -q --show-progress https://dl.google.com/android/repository/commandlinetools-linux-6514223_latest.zip -O cmdline-tools.zip
-          unzip -q cmdline-tools.zip
-          # 自动查找 sdkmanager 的位置
-          SDKMANAGER=$(find . -name sdkmanager -type f | head -1)
-          if [ -z "$SDKMANAGER" ]; then
-            echo "❌ sdkmanager not found. Directory structure:"
-            ls -R .
-            exit 1
-          fi
-          chmod +x $SDKMANAGER
-          # 设置环境变量
-          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
-          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-          # 接受许可证并安装平台 31
-          echo y | $SDKMANAGER --licenses > /dev/null 2>&1 || true
-          $SDKMANAGER "platforms;android-31" "build-tools;31.0.0"
-          # 删除 Buildozer 可能下载的旧 SDK 以免冲突
-          rm -rf ~/.buildozer/android/platform/android-sdk
-          # 验证安装
-          $SDKMANAGER --list | grep 'platforms;android-31'
-            # ----- 手动安装 Android NDK r25b -----
-            - name: Setup Android NDK r25b
-              run: |
-                mkdir -p $HOME/android-ndk
-                cd $HOME/android-ndk
-                wget -q --show-progress https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
-                unzip -q android-ndk-r25b-linux.zip
-                echo "ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r25b" >> $GITHUB_ENV
-                rm -rf ~/.buildozer/android/platform/android-ndk-*
-                echo "✅ Android NDK 安装完成！"
-
-      # ----- 缓存管理（可选）-----
+      # 可选：恢复缓存（仅 .buildozer 目录）
       - name: Restore buildozer cache
         uses: actions/cache@v4
         id: cache-buildozer
@@ -113,59 +56,9 @@ jobs:
           key: buildozer-${{ runner.os }}-ndk25b-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
             buildozer-${{ runner.os }}-ndk25b-
-            buildozer-${{ runner.os }}-
 
-      - name: Clean old build artifacts (if cache miss)
-        if: steps.cache-buildozer.outputs.cache-hit != 'true' || inputs.clean_cache == true
-        run: rm -rf .buildozer/android/platform/build-*
-
-      # ----- 核心构建步骤 -----
       - name: Build APK with verbose logging
         id: build
         run: |
-          BUILD_CMD="buildozer -v android ${{ inputs.build_type }}"
-          echo "🔨 执行命令: $BUILD_CMD"
-          $BUILD_CMD 2>&1 | tee build.log
-          EXIT_CODE=${PIPESTATUS[0]}
-
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "=== ❌ 构建失败 (退出码: $EXIT_CODE) ==="
-            echo "=== 📄 日志最后 500 行 ==="
-            tail -n 500 build.log
-            echo "=== 🔍 提取的关键错误行 (最多100行) ==="
-            grep -E -i "error|failed|exception|killed|clang: error|traceback|undefined reference|cannot find|implicit" \
-                 build.log | head -n 100 || echo "⚠️ 未找到常见错误关键词"
-            grep -E -i "error|failed|exception|killed|clang: error|traceback|undefined reference|cannot find|implicit" \
-                 build.log > error_summary.txt || echo "未找到错误" > error_summary.txt
-            echo "### ❌ 构建失败 - 错误摘要" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            cat error_summary.txt >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            exit $EXIT_CODE
-          else
-            echo "✅ 构建成功！"
-            ls -la bin/*.apk || echo "⚠️ 未找到 APK 文件"
-          fi
-
-      # ----- 上传产物 -----
-      - name: Upload APK
-        if: success() && steps.build.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: solar-collector-${{ inputs.build_type }}
-          path: bin/*.apk
-          if-no-files-found: error
-
-      - name: Upload full build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-${{ github.run_id }}
-          path: build.log
-
-      - name: Upload error summary
-        if: failure() && steps.build.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: error-summary
-          path: error_summary.txt
+          buildozer -v android ${{ inputs.build_type }} 2>&1 | tee build.log
+          # 检查结果...
