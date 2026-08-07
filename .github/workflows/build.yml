@@ -33,9 +33,7 @@ jobs:
 
       - name: Force clean buildozer cache
         if: inputs.clean_cache == true
-        run: |
-          echo "🧹 强制清理所有构建缓存..."
-          rm -rf .buildozer
+        run: rm -rf .buildozer
 
       - name: Increase swap space
         run: |
@@ -69,17 +67,27 @@ jobs:
           pip install --upgrade pip
           pip install buildozer cython
 
-      # ----- 手动安装 Android SDK Platform 31（修复版）-----
+      # ----- 手动安装 Android SDK Platform 31（增强版）-----
       - name: Setup Android SDK with platform 31
         run: |
-          # 创建 SDK 根目录
+          set -e  # 任何命令失败则退出
+
+          echo "📦 开始安装 Android SDK..."
+
+          # 1. 准备工作
           mkdir -p $HOME/android-sdk
           cd $HOME/android-sdk
 
-          # 下载 commandlinetools
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-6514223_latest.zip -O cmdline-tools.zip
+          # 2. 下载 commandlinetools（检查 wget）
+          echo "⬇️ 下载 commandlinetools..."
+          wget -q --show-progress https://dl.google.com/android/repository/commandlinetools-linux-6514223_latest.zip -O cmdline-tools.zip
+          if [ ! -f cmdline-tools.zip ] || [ $(stat -c%s cmdline-tools.zip) -lt 1000000 ]; then
+            echo "❌ 下载失败或文件不完整"
+            exit 1
+          fi
 
-          # 解压到临时目录，并处理可能的嵌套
+          # 3. 解压并处理目录嵌套
+          echo "📂 解压中..."
           unzip -q cmdline-tools.zip -d cmdline-tools-temp
           if [ -d cmdline-tools-temp/cmdline-tools ]; then
             mv cmdline-tools-temp/cmdline-tools/* cmdline-tools-temp/
@@ -87,32 +95,41 @@ jobs:
           fi
           mv cmdline-tools-temp cmdline-tools
 
-          # 设置环境变量
+          # 4. 确保 sdkmanager 可执行
+          chmod +x $HOME/android-sdk/cmdline-tools/bin/sdkmanager
+
+          # 5. 设置环境变量
           echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
           echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
 
-          # 接受许可证并安装 platform 31
-          echo y | $HOME/android-sdk/cmdline-tools/bin/sdkmanager --licenses > /dev/null 2>&1
+          # 6. 接受许可证并安装平台
+          echo "✅ 接受许可证..."
+          echo y | $HOME/android-sdk/cmdline-tools/bin/sdkmanager --licenses > /dev/null 2>&1 || echo "⚠️ 许可证接受可能已跳过"
+
+          echo "📱 安装 platform 31 和 build-tools..."
           $HOME/android-sdk/cmdline-tools/bin/sdkmanager "platforms;android-31" "build-tools;31.0.0"
 
-          # 删除 Buildozer 可能下载的旧 SDK
+          # 7. 清理 Buildozer 可能自动下载的 SDK 以免冲突
           rm -rf ~/.buildozer/android/platform/android-sdk
 
-          # 验证安装
-          $HOME/android-sdk/cmdline-tools/bin/sdkmanager --list | grep 'platforms;android-31'
+          # 8. 验证
+          echo "🔍 验证安装："
+          $HOME/android-sdk/cmdline-tools/bin/sdkmanager --list | grep 'platforms;android-31' || echo "⚠️ 未找到 platform 31"
+
+          echo "✅ Android SDK 安装完成！"
 
       # ----- 手动安装 Android NDK r25b -----
       - name: Setup Android NDK r25b
         run: |
           mkdir -p $HOME/android-ndk
           cd $HOME/android-ndk
-          wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+          wget -q --show-progress https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
           unzip -q android-ndk-r25b-linux.zip
           echo "ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r25b" >> $GITHUB_ENV
-          # 删除 Buildozer 可能下载的旧 NDK
           rm -rf ~/.buildozer/android/platform/android-ndk-*
+          echo "✅ Android NDK 安装完成！"
 
-      # ----- 缓存（可选，加速后续构建）-----
+      # ----- 缓存管理（可选）-----
       - name: Restore buildozer cache
         uses: actions/cache@v4
         id: cache-buildozer
@@ -125,11 +142,9 @@ jobs:
 
       - name: Clean old build artifacts (if cache miss)
         if: steps.cache-buildozer.outputs.cache-hit != 'true' || inputs.clean_cache == true
-        run: |
-          echo "🧹 清理旧构建目录（可能含有旧 NDK 产物）..."
-          rm -rf .buildozer/android/platform/build-*
+        run: rm -rf .buildozer/android/platform/build-*
 
-      # ----- 核心构建步骤（带错误提取）-----
+      # ----- 核心构建步骤 -----
       - name: Build APK with verbose logging
         id: build
         run: |
