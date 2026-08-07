@@ -34,12 +34,7 @@ from kivy.storage.jsonstore import JsonStore
 from kivy.utils import platform
 from kivy.core.text import LabelBase
 from kivy.config import Config
-
-# ========== 中文字体注册（必须在任何 Kivy 组件实例化之前） ==========
-# 注册中文字体（路径相对于 APK 内的 assets 目录）
-LabelBase.register(name='Chinese', fn_regular='assets/fonts/NotoSansCJKsc-Regular.otf')
-# 设置默认字体为中文，如果找不到则回退到系统字体
-Config.set('kivy', 'default_font', ['Chinese', 'data/fonts/DejaVuSans.ttf'])
+from kivy.resources import resource_find
 
 # ==============================================================
 
@@ -525,6 +520,22 @@ class MainScreen(BoxLayout):
 # -------- App 类 --------
 class SolarApp(App):
     def build(self):
+        # ---------- 安全加载中文字体 ----------
+        # 使用 resource_find 转换 assets 路径为实际文件系统路径
+        font_path = resource_find('assets/fonts/NotoSansCJKsc-Regular.otf')
+        if font_path:
+            try:
+                LabelBase.register(name='Chinese', fn_regular=font_path)
+                Config.set('kivy', 'default_font', ['Chinese', 'data/fonts/DejaVuSans.ttf'])
+                print("✅ 中文字体加载成功")
+            except Exception as e:
+                print(f"⚠️ 字体注册失败: {e}")
+        else:
+            print("⚠️ 未找到中文字体，将使用系统默认字体")
+            # 可选的降级方案：尝试使用系统内置中文字体（部分设备有效）
+            # Config.set('kivy', 'default_font', ['DroidSansFallback.ttf', 'NotoSansCJK-Regular.ttc'])
+        # ------------------------------------
+
         self.token = None
         self.server_url = None
         self.login_screen = LoginScreen(self)
