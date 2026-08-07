@@ -57,18 +57,12 @@ jobs:
       - name: Set JAVA_HOME to Java 17
         run: echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
 
-      # 关键：清除任何可能干扰 Buildozer 自动下载 SDK/NDK 的环境变量
-      - name: Unset conflicting Android environment variables
-        run: |
-          unset ANDROID_NDK ANDROID_NDK_HOME ANDROID_NDK_ROOT ANDROID_HOME ANDROID_SDK_ROOT
-          echo "✅ 已清除冲突的 Android 环境变量"
-
       - name: Install Buildozer and Cython
         run: |
           pip install --upgrade pip
           pip install buildozer cython
 
-      # ----- 缓存管理（加速后续构建）-----
+      # ----- 缓存管理 -----
       - name: Restore buildozer cache
         uses: actions/cache@v4
         id: cache-buildozer
@@ -83,10 +77,16 @@ jobs:
         if: steps.cache-buildozer.outputs.cache-hit != 'true' || inputs.clean_cache == true
         run: rm -rf .buildozer/android/platform/build-*
 
-      # ----- 核心构建步骤（Buildozer 会自动下载所需的 SDK/NDK）-----
+      # ----- 核心构建步骤（强制清除系统 Android 环境变量）-----
       - name: Build APK with verbose logging
         id: build
         run: |
+          # 清除所有可能干扰的系统 Android 环境变量
+          unset ANDROID_HOME ANDROID_SDK_ROOT ANDROID_NDK ANDROID_NDK_HOME ANDROID_NDK_ROOT
+
+          # 让 Buildozer 使用自己的默认 SDK 路径（~/.buildozer/android/platform/android-sdk）
+          # 无需额外设置，Buildozer 会自动处理
+
           BUILD_CMD="buildozer -v android ${{ inputs.build_type }}"
           echo "🔨 执行命令: $BUILD_CMD"
           $BUILD_CMD 2>&1 | tee build.log
