@@ -2,7 +2,7 @@
 """
 Android 光资源采集器（Kivy 版）
 无 pandas、无 matplotlib 依赖，使用 Kivy Canvas 绘图
-最后更新：2026.08.06
+最后更新：2026.08.07
 """
 
 import os
@@ -14,7 +14,6 @@ import csv
 from datetime import datetime
 
 import requests
-
 from geopy.geocoders import Nominatim
 
 from kivy.app import App
@@ -33,6 +32,16 @@ from kivy.core.window import Window
 from kivy.clock import Clock, mainthread
 from kivy.storage.jsonstore import JsonStore
 from kivy.utils import platform
+from kivy.core.text import LabelBase
+from kivy.config import Config
+
+# ========== 中文字体注册（必须在任何 Kivy 组件实例化之前） ==========
+# 注册中文字体（路径相对于 APK 内的 assets 目录）
+LabelBase.register(name='Chinese', fn_regular='assets/fonts/NotoSansCJKsc-Regular.otf')
+# 设置默认字体为中文，如果找不到则回退到系统字体
+Config.set('kivy', 'default_font', ['Chinese', 'data/fonts/DejaVuSans.ttf'])
+
+# ==============================================================
 
 # -------- 工具函数 --------
 def get_public_download_dir():
@@ -65,7 +74,7 @@ def get_coordinates(address, retries=2):
         print("❌ geopy 未安装，请手动输入经纬度")
     return None, None, None
 
-# -------- API 数据获取（与原来一致）--------
+# -------- API 数据获取 --------
 def fetch_openmeteo_data(lat, lon, start_year, end_year, retries=3, delay=0.5):
     time.sleep(delay)
     url = "https://archive-api.open-meteo.com/v1/archive"
@@ -134,7 +143,7 @@ def fetch_nasa_data(lat, lon, start_year, end_year, retries=3, delay=0.5):
     return None
 
 def fetch_pvgis_data(lat, lon, start_year, end_year, retries=3, delay=0.5):
-    # 简化：模拟数据，实际可调用PVGIS API
+    # 简化：模拟数据
     nasa = fetch_nasa_data(lat, lon, start_year, end_year, retries=1)
     if nasa:
         return nasa
@@ -161,9 +170,8 @@ def compute_statistics(data_list):
         'years': len(vals)
     }
 
-# ========== 新增：Kivy Canvas 绘图组件 ==========
+# ========== Canvas 绘图组件 ==========
 class LineChartWidget(Widget):
-    """使用 Canvas 绘制折线图，数据为 (x_values, y_values)"""
     def __init__(self, x_values, y_values, title='', x_label='年份', y_label='GHI (kWh/m²)', **kwargs):
         super().__init__(**kwargs)
         self.x_values = x_values
@@ -177,7 +185,6 @@ class LineChartWidget(Widget):
         self.canvas.clear()
         if not self.x_values or not self.y_values:
             return
-        # 获取绘图区域（留边距）
         w, h = self.width, self.height
         margin = 40
         plot_w = w - 2 * margin
@@ -185,43 +192,35 @@ class LineChartWidget(Widget):
         if plot_w <= 0 or plot_h <= 0:
             return
 
-        # 计算坐标范围
         x_min, x_max = min(self.x_values), max(self.x_values)
         y_min, y_max = min(self.y_values), max(self.y_values)
         y_range = y_max - y_min if y_max != y_min else 1.0
         x_range = x_max - x_min if x_max != x_min else 1.0
 
-        # 绘制背景网格（可选）
         with self.canvas:
             Color(0.9, 0.9, 0.9, 0.5)
-            for i in range(6):  # 水平网格线
+            for i in range(6):
                 y_frac = i / 5.0
                 y_pos = margin + y_frac * plot_h
                 Line(points=[margin, y_pos, w - margin, y_pos], width=1)
 
-        # 绘制折线
         points = []
         for x, y in zip(self.x_values, self.y_values):
             px = margin + ((x - x_min) / x_range) * plot_w
             py = margin + ((y - y_min) / y_range) * plot_h
             points.extend([px, py])
         with self.canvas:
-            Color(0.12, 0.56, 1.0, 1)  # 蓝色
+            Color(0.12, 0.56, 1.0, 1)
             if len(points) >= 4:
                 Line(points=points, width=2, close=False)
-            # 绘制数据点
             for i in range(0, len(points), 2):
                 Color(1, 0, 0, 1)
                 Line(circle=(points[i], points[i+1], 5), width=2)
 
-        # 绘制坐标轴标签（简单文本，可以用 Label 叠加，这里使用 Canvas 文本暂不支持中文，故用 Label 叠加）
-        # 建议在外部用 Label 添加标题和轴标签，此处只绘图
-
 # =============================================
 
-# -------- 主界面 --------
+# -------- 登录界面 --------
 class LoginScreen(BoxLayout):
-    # 与原来完全相同，省略（保持原样）
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', spacing=10, padding=20)
         self.app = app
@@ -271,6 +270,7 @@ class LoginScreen(BoxLayout):
             except Exception as e:
                 self.status_label.text = f'❌ 连接失败: {str(e)}'
 
+# -------- 主界面 --------
 class MainScreen(BoxLayout):
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', spacing=5)
@@ -284,7 +284,7 @@ class MainScreen(BoxLayout):
         param_box.add_widget(Label(text='结束年份:'))
         self.end_year = TextInput(text='2025', multiline=False, input_filter='int')
         param_box.add_widget(self.end_year)
-        param_box.add_widget(Label(text='图表类型:'))  # 保留但实际只支持line
+        param_box.add_widget(Label(text='图表类型:'))
         self.chart_type = TextInput(text='line', multiline=False)
         param_box.add_widget(self.chart_type)
         self.add_widget(param_box)
@@ -333,7 +333,7 @@ class MainScreen(BoxLayout):
         self.log_label.bind(size=self.log_label.setter('text_size'))
         self.add_widget(self.log_label)
 
-        # 添加一个容器用于显示图表（使用ScrollView以便滑动查看）
+        # 图表容器
         self.chart_container = ScrollView(size_hint_y=None, height=300)
         self.chart_box = BoxLayout(orientation='vertical', size_hint_y=None)
         self.chart_box.bind(minimum_height=self.chart_box.setter('height'))
@@ -342,13 +342,13 @@ class MainScreen(BoxLayout):
 
         # 内部变量
         self.results = {}
-        self.yearly = {}       # {address: {source: [list_of_dict]}}
+        self.yearly = {}
         self.chart_widgets = {}
         self.completed = 0
         self.total_tasks = 0
         self.is_running = False
 
-    # 表格操作函数（与原来相同）
+    # 表格操作
     def add_table_row(self, addr='', lat='', lon='', contract=''):
         self.table_grid.add_widget(TextInput(text=addr, multiline=False))
         self.table_grid.add_widget(TextInput(text=lat, multiline=False))
@@ -370,11 +370,10 @@ class MainScreen(BoxLayout):
             self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True))
 
     def load_csv(self, instance):
-        # TODO: 可后续实现
+        # TODO: 后续实现
         pass
 
     def save_csv(self, instance):
-        # 复用原有的导出逻辑，但为了简洁，这里直接调用内部方法（已在 _export_csv 实现）
         self._export_csv()
 
     def start_processing(self, instance):
@@ -419,7 +418,6 @@ class MainScreen(BoxLayout):
         self.progress.value = 0
         self.is_running = True
         self.log_label.text = f'🚀 开始处理 {len(rows)} 个地址...'
-        # 清空之前的图表
         self.chart_box.clear_widgets()
         threading.Thread(target=self._process_serial, args=(rows, start, end), daemon=True).start()
 
@@ -438,7 +436,7 @@ class MainScreen(BoxLayout):
                 ('NASA POWER', fetch_nasa_data),
                 ('PVGIS', fetch_pvgis_data)
             ]
-            addr_charts = []  # 用于存储该地址的图表数据
+            addr_charts = []
             for src_name, fetch_func in sources:
                 if not self.is_running:
                     break
@@ -458,13 +456,11 @@ class MainScreen(BoxLayout):
                     self.yearly[addr] = {}
                 self.results[addr][src_name] = stats
                 self.yearly[addr][src_name] = data
-                # 收集数据用于绘图
                 years = [d['YEAR'] for d in data]
                 ghi = [d['GHI_kWh_m2_year'] for d in data]
                 addr_charts.append((src_name, years, ghi))
                 self._update_log(f'[{addr}] {src_name} 完成')
                 self._update_progress(1)
-            # 为该地址生成图表（在UI线程）
             if addr_charts:
                 Clock.schedule_once(lambda dt, a=addr, charts=addr_charts: self._display_charts(a, charts), 0)
             time.sleep(0.5)
@@ -473,24 +469,18 @@ class MainScreen(BoxLayout):
         self._export_csv()
 
     def _display_charts(self, addr, charts):
-        """在 chart_box 中为每个数据源添加折线图"""
-        # 添加地址标题
         title_label = Label(text=f'📍 {addr}', size_hint_y=None, height=40, bold=True)
         self.chart_box.add_widget(title_label)
         for src_name, years, ghi in charts:
-            # 添加数据源标签
             src_label = Label(text=f'📊 {src_name}', size_hint_y=None, height=30)
             self.chart_box.add_widget(src_label)
-            # 创建绘图组件
             chart_widget = LineChartWidget(x_values=years, y_values=ghi, size_hint_y=None, height=200)
             self.chart_box.add_widget(chart_widget)
-            # 可选：添加统计信息标签
             stats = self.results.get(addr, {}).get(src_name)
             if stats:
                 info = f"平均 {stats['avg']:.1f}  最大 {stats['max']:.1f}  最小 {stats['min']:.1f}  稳定性 {stats['stability']:.1f}%"
                 info_label = Label(text=info, size_hint_y=None, height=25, font_size='12sp')
                 self.chart_box.add_widget(info_label)
-        # 更新高度
         self.chart_box.height = len(self.chart_box.children) * 40 + 200 * len(charts)
 
     @mainthread
@@ -532,17 +522,8 @@ class MainScreen(BoxLayout):
                       size_hint=(0.8, 0.4))
         popup.open()
 
-# -------- App --------
+# -------- App 类 --------
 class SolarApp(App):
-
-from kivy.core.text import LabelBase
-from kivy.config import Config
-
-# 注册中文字体
-LabelBase.register(name='Chinese', fn_regular='assets/fonts/NotoSansCJKsc-Regular.otf')
-
-# 设置全局默认字体（务必在 Kivy 实例化前设置，但这里 build() 中已经实例化，可能不生效）
-# 更可靠的方式是在 build() 之前设置，但为了简化，可以单独对每个 Label 指定 font_name
     def build(self):
         self.token = None
         self.server_url = None
