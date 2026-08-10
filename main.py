@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Android Solar Radiation Collector (Kivy Version)
-Enhanced with full logging, error popups, and automatic proxy detection.
+Enhanced with full error handling, proxy detection, and persistent logs.
 Last updated: 2026.08.10
 """
 
@@ -67,36 +67,16 @@ def get_app_data_dir():
 
 def detect_proxy():
     """
-    Detect system proxy for Android and desktop.
-    Returns dict for requests proxies or None.
+    Detect HTTP/HTTPS proxy from environment variables only.
+    Avoid subprocess to prevent crashes on emulators.
     """
     proxies = {}
-    # 1. Try environment variables
     http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
     https_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
     if http_proxy:
         proxies['http'] = http_proxy
     if https_proxy:
         proxies['https'] = https_proxy
-
-    # 2. On Android, try to read system properties (requires root? not, only via getprop command)
-    if platform == 'android':
-        try:
-            import subprocess
-            # Try to get proxy host and port from system settings
-            # This works on many Android devices without root
-            # Use settings get global http_proxy
-            # Note: this is not guaranteed, but we try
-            # Alternatively, we can use android.provider.Settings via jnius, but we avoid extra deps
-            # We'll just try to read from getprop
-            host = subprocess.check_output(['getprop', 'net.proxy.host'], text=True).strip()
-            port = subprocess.check_output(['getprop', 'net.proxy.port'], text=True).strip()
-            if host and port:
-                proxy_url = f"http://{host}:{port}"
-                proxies['http'] = proxy_url
-                proxies['https'] = proxy_url
-        except:
-            pass
     return proxies if proxies else None
 
 # -------- Geocoding --------
@@ -188,7 +168,6 @@ def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3, del
 
 def fetch_pvgis_data(lat, lon, start_year, end_year, proxies=None, retries=3, delay=0.5):
     # Fallback: mock data (no network)
-    # Try NASA first, if fails then mock
     nasa = fetch_nasa_data(lat, lon, start_year, end_year, proxies, retries=1)
     if nasa:
         return nasa
@@ -318,93 +297,116 @@ class LoginScreen(BoxLayout):
 # -------- Main Screen --------
 class MainScreen(BoxLayout):
     def __init__(self, app, **kwargs):
-        super().__init__(orientation='vertical', spacing=5)
-        self.app = app
-        self.proxies = detect_proxy()  # Detect proxy on startup
-        if self.proxies:
-            self.app._write_startup_log(f"Proxy detected: {self.proxies}")
-        else:
-            self.app._write_startup_log("No proxy detected, using direct connection.")
+        # 整个初始化过程用 try/except 保护，防止闪退
+        try:
+            super().__init__(orientation='vertical', spacing=5)
+            self.app = app
 
-        # Parameter input row
-        param_box = BoxLayout(size_hint_y=None, height=200, spacing=5)
-        param_box.add_widget(Label(text='Start Year:'))
-        self.start_year = TextInput(text='2010', multiline=False, input_filter='int')
-        param_box.add_widget(self.start_year)
-        param_box.add_widget(Label(text='End Year:'))
-        self.end_year = TextInput(text='2025', multiline=False, input_filter='int')
-        param_box.add_widget(self.end_year)
-        param_box.add_widget(Label(text='Chart Type:'))
-        self.chart_type = TextInput(text='line', multiline=False)
-        param_box.add_widget(self.chart_type)
-        self.add_widget(param_box)
+            # 参数输入行
+            param_box = BoxLayout(size_hint_y=None, height=200, spacing=5)
+            param_box.add_widget(Label(text='Start Year:'))
+            self.start_year = TextInput(text='2010', multiline=False, input_filter='int')
+            param_box.add_widget(self.start_year)
+            param_box.add_widget(Label(text='End Year:'))
+            self.end_year = TextInput(text='2025', multiline=False, input_filter='int')
+            param_box.add_widget(self.end_year)
+            param_box.add_widget(Label(text='Chart Type:'))
+            self.chart_type = TextInput(text='line', multiline=False)
+            param_box.add_widget(self.chart_type)
+            self.add_widget(param_box)
 
-        # Table input
-        self.table_container = ScrollView()
-        self.table_grid = GridLayout(cols=4, size_hint_y=None, spacing=2, row_default_height=40)
-        self.table_grid.bind(minimum_height=self.table_grid.setter('height'))
-        headers = ['Address', 'Latitude', 'Longitude', 'Contract Value']
-        for h in headers:
-            self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True))
-        self.add_table_row('Shanghai, China', '', '', '1500')
-        self.table_container.add_widget(self.table_grid)
-        self.add_widget(self.table_container)
+            # 表格输入
+            self.table_container = ScrollView()
+            self.table_grid = GridLayout(cols=4, size_hint_y=None, spacing=2, row_default_height=40)
+            self.table_grid.bind(minimum_height=self.table_grid.setter('height'))
+            headers = ['Address', 'Latitude', 'Longitude', 'Contract Value']
+            for h in headers:
+                self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True))
+            self.add_table_row('Shanghai, China', '', '', '1500')
+            self.table_container.add_widget(self.table_grid)
+            self.add_widget(self.table_container)
 
-        # Buttons
-        btn_box = BoxLayout(size_hint_y=None, height=50, spacing=5)
-        add_btn = Button(text='Add Row')
-        add_btn.bind(on_press=self.add_row)
-        del_btn = Button(text='Delete Last Row')
-        del_btn.bind(on_press=self.del_row)
-        clear_btn = Button(text='Clear All')
-        clear_btn.bind(on_press=self.clear_all)
-        load_btn = Button(text='Import CSV')
-        load_btn.bind(on_press=self.load_csv)
-        save_btn = Button(text='Export CSV')
-        save_btn.bind(on_press=self.save_csv)
-        btn_box.add_widget(add_btn)
-        btn_box.add_widget(del_btn)
-        btn_box.add_widget(clear_btn)
-        btn_box.add_widget(load_btn)
-        btn_box.add_widget(save_btn)
-        self.add_widget(btn_box)
+            # 按钮
+            btn_box = BoxLayout(size_hint_y=None, height=50, spacing=5)
+            add_btn = Button(text='Add Row')
+            add_btn.bind(on_press=self.add_row)
+            del_btn = Button(text='Delete Last Row')
+            del_btn.bind(on_press=self.del_row)
+            clear_btn = Button(text='Clear All')
+            clear_btn.bind(on_press=self.clear_all)
+            load_btn = Button(text='Import CSV')
+            load_btn.bind(on_press=self.load_csv)
+            save_btn = Button(text='Export CSV')
+            save_btn.bind(on_press=self.save_csv)
+            btn_box.add_widget(add_btn)
+            btn_box.add_widget(del_btn)
+            btn_box.add_widget(clear_btn)
+            btn_box.add_widget(load_btn)
+            btn_box.add_widget(save_btn)
+            self.add_widget(btn_box)
 
-        # Progress bar
-        self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=30)
-        self.add_widget(self.progress)
+            # 进度条
+            self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=30)
+            self.add_widget(self.progress)
 
-        # Start button
-        start_btn = Button(text='Start Collecting', size_hint_y=None, height=50, background_color=(0.2,0.7,0.2,1))
-        start_btn.bind(on_press=self.start_processing)
-        self.add_widget(start_btn)
+            # 开始按钮
+            start_btn = Button(text='Start Collecting', size_hint_y=None, height=50, background_color=(0.2,0.7,0.2,1))
+            start_btn.bind(on_press=self.start_processing)
+            self.add_widget(start_btn)
 
-        # Log output (ScrollView + TextInput for full log)
-        log_box = BoxLayout(orientation='vertical', size_hint_y=None, height=250)
-        log_box.add_widget(Label(text='Log Output:', size_hint_y=None, height=30))
-        self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left', valign='top')
-        self.log_text.bind(size=self.log_text.setter('text_size'))
-        log_scroll = ScrollView()
-        log_scroll.add_widget(self.log_text)
-        log_box.add_widget(log_scroll)
-        # Clear log button
-        clear_log_btn = Button(text='Clear Log', size_hint_y=None, height=40)
-        clear_log_btn.bind(on_press=self.clear_log)
-        log_box.add_widget(clear_log_btn)
-        self.add_widget(log_box)
+            # 日志输出 (ScrollView + TextInput)
+            log_box = BoxLayout(orientation='vertical', size_hint_y=None, height=250)
+            log_box.add_widget(Label(text='Log Output:', size_hint_y=None, height=30))
+            self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left', valign='top')
+            self.log_text.bind(size=self.log_text.setter('text_size'))
+            log_scroll = ScrollView()
+            log_scroll.add_widget(self.log_text)
+            log_box.add_widget(log_scroll)
+            clear_log_btn = Button(text='Clear Log', size_hint_y=None, height=40)
+            clear_log_btn.bind(on_press=self.clear_log)
+            log_box.add_widget(clear_log_btn)
+            self.add_widget(log_box)
 
-        # Chart container
-        self.chart_container = ScrollView(size_hint_y=None, height=400)
-        self.chart_box = BoxLayout(orientation='vertical', size_hint_y=None)
-        self.chart_box.bind(minimum_height=self.chart_box.setter('height'))
-        self.chart_container.add_widget(self.chart_box)
-        self.add_widget(self.chart_container)
+            # 图表容器
+            self.chart_container = ScrollView(size_hint_y=None, height=400)
+            self.chart_box = BoxLayout(orientation='vertical', size_hint_y=None)
+            self.chart_box.bind(minimum_height=self.chart_box.setter('height'))
+            self.chart_container.add_widget(self.chart_box)
+            self.add_widget(self.chart_container)
 
-        # Internal variables
-        self.results = {}
-        self.yearly = {}
-        self.completed = 0
-        self.total_tasks = 0
-        self.is_running = False
+            # 内部变量
+            self.results = {}
+            self.yearly = {}
+            self.completed = 0
+            self.total_tasks = 0
+            self.is_running = False
+
+            # 延迟执行可能出错的操作（代理检测）
+            Clock.schedule_once(self._initialize_after_start, 0)
+
+        except Exception as e:
+            # 如果初始化过程中出现未捕获异常，显示错误信息并记录日志
+            error_text = f"MainScreen initialization error:\n{traceback.format_exc()}"
+            self.app._write_startup_log(error_text)
+            # 清空原有widget（可能部分构建成功），添加错误标签
+            self.clear_widgets()
+            error_label = Label(text=error_text, color=(1,0,0,1), text_size=(self.width, None), halign='left', valign='top')
+            error_label.bind(size=error_label.setter('text_size'))
+            self.add_widget(error_label)
+
+    def _initialize_after_start(self, dt):
+        # 安全检测代理（只使用环境变量）
+        try:
+            self.proxies = detect_proxy()
+            if self.proxies:
+                self.app._write_startup_log(f"Proxy detected: {self.proxies}")
+                self._update_log(f"Proxy detected: {self.proxies}")
+            else:
+                self.app._write_startup_log("No proxy detected, using direct connection.")
+                self._update_log("No proxy detected, using direct connection.")
+        except Exception as e:
+            self.app._write_startup_log(f"Proxy detection error: {traceback.format_exc()}")
+            self._update_log(f"⚠️ Proxy detection error: {e}")
 
     def clear_log(self, instance):
         self.log_text.text = ''
@@ -439,10 +441,11 @@ class MainScreen(BoxLayout):
 
     def start_processing(self, instance):
         if self.is_running:
+            self._update_log('⚠️ Already running, please wait.')
             return
         children = self.table_grid.children
         if len(children) <= 4:
-            self.log_text.text += '\n❌ Please enter at least one address'
+            self._update_log('❌ Please enter at least one address')
             return
         rows = []
         items = list(children)[:-4]
@@ -467,7 +470,7 @@ class MainScreen(BoxLayout):
                 contract_val = None
             rows.append((addr, lat_val, lon_val, contract_val))
         if not rows:
-            self.log_text.text += '\n❌ No valid addresses'
+            self._update_log('❌ No valid addresses')
             return
         start = int(self.start_year.text)
         end = int(self.end_year.text)
@@ -477,7 +480,7 @@ class MainScreen(BoxLayout):
         self.total_tasks = len(rows) * 3
         self.progress.value = 0
         self.is_running = True
-        self.log_text.text += f'\n🚀 Processing {len(rows)} address(es)...'
+        self._update_log(f'🚀 Processing {len(rows)} address(es)...')
         self.chart_box.clear_widgets()
         threading.Thread(target=self._process_serial, args=(rows, start, end), daemon=True).start()
 
@@ -525,9 +528,7 @@ class MainScreen(BoxLayout):
             if addr_charts:
                 Clock.schedule_once(lambda dt, a=addr, charts=addr_charts: self._display_charts(a, charts), 0)
             else:
-                # All sources failed for this address
                 self._update_log(f'❌ All sources failed for {addr}')
-                # Show popup error on main thread
                 Clock.schedule_once(lambda dt, a=addr: self._show_error_popup(a), 0)
             time.sleep(0.5)
         self._update_log('🎉 All tasks completed!')
@@ -573,7 +574,6 @@ class MainScreen(BoxLayout):
     @mainthread
     def _update_log(self, msg):
         self.log_text.text += f'\n{msg}'
-        # Auto-scroll to bottom (by moving cursor to end)
         self.log_text.cursor = (0, len(self.log_text.text))
 
     @mainthread
@@ -655,9 +655,17 @@ class SolarApp(App):
             pass
 
     def show_main_screen(self):
-        self.main_screen = MainScreen(self)
-        self.root.clear_widgets()
-        self.root.add_widget(self.main_screen)
+        try:
+            self.main_screen = MainScreen(self)
+            self.root.clear_widgets()
+            self.root.add_widget(self.main_screen)
+        except Exception as e:
+            # 如果显示主界面时崩溃，显示错误信息
+            error_text = f"Error showing main screen:\n{traceback.format_exc()}"
+            self._write_startup_log(error_text)
+            # 尝试用 Label 显示错误
+            self.root.clear_widgets()
+            self.root.add_widget(Label(text=error_text, color=(1,0,0,1)))
 
 if __name__ == '__main__':
     SolarApp().run()
