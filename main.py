@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 Android Solar Radiation Collector (Kivy Version)
-No pandas, no matplotlib, uses Kivy Canvas for plotting
-Last updated: 2026.08.10 - Removed external storage dependency, all English UI
+Enhanced with full logging, error popups, and automatic proxy detection.
+Last updated: 2026.08.10
 """
 
 import os
@@ -15,7 +15,7 @@ import csv
 import tempfile
 from datetime import datetime
 
-# ---- Global exception handler (write to app private dir) ----
+# ---- Global exception handler ----
 def global_exception_handler(exc_type, exc_value, exc_tb):
     error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
     try:
@@ -57,16 +57,49 @@ from kivy.config import Config
 
 # ==============================================================
 
-# -------- Utility: all file operations point to internal storage --------
+# -------- Utility: internal storage and proxy detection --------
 def get_app_data_dir():
-    """Return app private data directory, no permission needed"""
     app = App.get_running_app()
     if app:
         return app.user_data_dir
     else:
         return os.path.expanduser('~/.solar_collector_data')
 
-# -------- Geocoding (keep geopy) --------
+def detect_proxy():
+    """
+    Detect system proxy for Android and desktop.
+    Returns dict for requests proxies or None.
+    """
+    proxies = {}
+    # 1. Try environment variables
+    http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
+    https_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
+    if http_proxy:
+        proxies['http'] = http_proxy
+    if https_proxy:
+        proxies['https'] = https_proxy
+
+    # 2. On Android, try to read system properties (requires root? not, only via getprop command)
+    if platform == 'android':
+        try:
+            import subprocess
+            # Try to get proxy host and port from system settings
+            # This works on many Android devices without root
+            # Use settings get global http_proxy
+            # Note: this is not guaranteed, but we try
+            # Alternatively, we can use android.provider.Settings via jnius, but we avoid extra deps
+            # We'll just try to read from getprop
+            host = subprocess.check_output(['getprop', 'net.proxy.host'], text=True).strip()
+            port = subprocess.check_output(['getprop', 'net.proxy.port'], text=True).strip()
+            if host and port:
+                proxy_url = f"http://{host}:{port}"
+                proxies['http'] = proxy_url
+                proxies['https'] = proxy_url
+        except:
+            pass
+    return proxies if proxies else None
+
+# -------- Geocoding --------
 def get_coordinates(address, retries=2):
     print(f"🗺️ Geocoding: {address}")
     try:
@@ -85,8 +118,8 @@ def get_coordinates(address, retries=2):
         print(f"❌ Geocoding error: {e}")
     return None, None, None
 
-# -------- API data fetchers (unchanged) --------
-def fetch_openmeteo_data(lat, lon, start_year, end_year, retries=3, delay=0.5):
+# -------- API data fetchers (with proxy support) --------
+def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3, delay=0.5):
     time.sleep(delay)
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
@@ -96,7 +129,7 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, retries=3, delay=0.5):
     }
     for _ in range(retries):
         try:
-            resp = requests.get(url, params=params, timeout=30)
+            resp = requests.get(url, params=params, timeout=30, proxies=proxies)
             if resp.status_code != 200:
                 time.sleep(2)
                 continue
@@ -122,7 +155,7 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, retries=3, delay=0.5):
             time.sleep(2)
     return None
 
-def fetch_nasa_data(lat, lon, start_year, end_year, retries=3, delay=0.5):
+def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3, delay=0.5):
     time.sleep(delay)
     url = "https://power.larc.nasa.gov/api/temporal/daily/point"
     params = {
@@ -134,7 +167,7 @@ def fetch_nasa_data(lat, lon, start_year, end_year, retries=3, delay=0.5):
     headers = {'User-Agent': 'Mozilla/5.0'}
     for _ in range(retries):
         try:
-            resp = requests.get(url, params=params, headers=headers, timeout=30)
+            resp = requests.get(url, params=params, headers=headers, timeout=30, proxies=proxies)
             if resp.status_code != 200:
                 time.sleep(2)
                 continue
@@ -153,9 +186,10 @@ def fetch_nasa_data(lat, lon, start_year, end_year, retries=3, delay=0.5):
             time.sleep(2)
     return None
 
-def fetch_pvgis_data(lat, lon, start_year, end_year, retries=3, delay=0.5):
-    # Fallback: mock data
-    nasa = fetch_nasa_data(lat, lon, start_year, end_year, retries=1)
+def fetch_pvgis_data(lat, lon, start_year, end_year, proxies=None, retries=3, delay=0.5):
+    # Fallback: mock data (no network)
+    # Try NASA first, if fails then mock
+    nasa = fetch_nasa_data(lat, lon, start_year, end_year, proxies, retries=1)
     if nasa:
         return nasa
     random.seed(42)
@@ -286,6 +320,11 @@ class MainScreen(BoxLayout):
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', spacing=5)
         self.app = app
+        self.proxies = detect_proxy()  # Detect proxy on startup
+        if self.proxies:
+            self.app._write_startup_log(f"Proxy detected: {self.proxies}")
+        else:
+            self.app._write_startup_log("No proxy detected, using direct connection.")
 
         # Parameter input row
         param_box = BoxLayout(size_hint_y=None, height=200, spacing=5)
@@ -339,13 +378,22 @@ class MainScreen(BoxLayout):
         start_btn.bind(on_press=self.start_processing)
         self.add_widget(start_btn)
 
-        # Log output
-        self.log_label = Label(text='Log output...', halign='left', valign='top', size_hint_y=None, height=150)
-        self.log_label.bind(size=self.log_label.setter('text_size'))
-        self.add_widget(self.log_label)
+        # Log output (ScrollView + TextInput for full log)
+        log_box = BoxLayout(orientation='vertical', size_hint_y=None, height=250)
+        log_box.add_widget(Label(text='Log Output:', size_hint_y=None, height=30))
+        self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left', valign='top')
+        self.log_text.bind(size=self.log_text.setter('text_size'))
+        log_scroll = ScrollView()
+        log_scroll.add_widget(self.log_text)
+        log_box.add_widget(log_scroll)
+        # Clear log button
+        clear_log_btn = Button(text='Clear Log', size_hint_y=None, height=40)
+        clear_log_btn.bind(on_press=self.clear_log)
+        log_box.add_widget(clear_log_btn)
+        self.add_widget(log_box)
 
         # Chart container
-        self.chart_container = ScrollView(size_hint_y=None, height=300)
+        self.chart_container = ScrollView(size_hint_y=None, height=400)
         self.chart_box = BoxLayout(orientation='vertical', size_hint_y=None)
         self.chart_box.bind(minimum_height=self.chart_box.setter('height'))
         self.chart_container.add_widget(self.chart_box)
@@ -354,10 +402,12 @@ class MainScreen(BoxLayout):
         # Internal variables
         self.results = {}
         self.yearly = {}
-        self.chart_widgets = {}
         self.completed = 0
         self.total_tasks = 0
         self.is_running = False
+
+    def clear_log(self, instance):
+        self.log_text.text = ''
 
     # Table operations
     def add_table_row(self, addr='', lat='', lon='', contract=''):
@@ -392,7 +442,7 @@ class MainScreen(BoxLayout):
             return
         children = self.table_grid.children
         if len(children) <= 4:
-            self.log_label.text = '❌ Please enter at least one address'
+            self.log_text.text += '\n❌ Please enter at least one address'
             return
         rows = []
         items = list(children)[:-4]
@@ -417,22 +467,22 @@ class MainScreen(BoxLayout):
                 contract_val = None
             rows.append((addr, lat_val, lon_val, contract_val))
         if not rows:
-            self.log_label.text = '❌ No valid addresses'
+            self.log_text.text += '\n❌ No valid addresses'
             return
         start = int(self.start_year.text)
         end = int(self.end_year.text)
         self.results.clear()
         self.yearly.clear()
-        self.chart_widgets.clear()
         self.completed = 0
         self.total_tasks = len(rows) * 3
         self.progress.value = 0
         self.is_running = True
-        self.log_label.text = f'🚀 Processing {len(rows)} address(es)...'
+        self.log_text.text += f'\n🚀 Processing {len(rows)} address(es)...'
         self.chart_box.clear_widgets()
         threading.Thread(target=self._process_serial, args=(rows, start, end), daemon=True).start()
 
     def _process_serial(self, rows, start_year, end_year):
+        any_success = False
         for idx, (addr, lat, lon, contract) in enumerate(rows, 1):
             if not self.is_running:
                 break
@@ -448,32 +498,56 @@ class MainScreen(BoxLayout):
                 ('PVGIS', fetch_pvgis_data)
             ]
             addr_charts = []
+            failed_sources = []
             for src_name, fetch_func in sources:
                 if not self.is_running:
                     break
                 self._update_log(f'[{addr}] Fetching {src_name}...')
-                data = fetch_func(lat, lon, start_year, end_year)
+                data = fetch_func(lat, lon, start_year, end_year, proxies=self.proxies)
                 if not data:
                     self._update_log(f'[{addr}] {src_name} failed')
+                    failed_sources.append(src_name)
                     self._update_progress(1)
                     continue
                 stats = compute_statistics(data)
                 if stats is None:
                     self._update_log(f'[{addr}] {src_name} invalid data')
+                    failed_sources.append(src_name)
                     self._update_progress(1)
                     continue
+                any_success = True
                 Clock.schedule_once(lambda dt, a=addr, s=src_name, st=stats, d=data: self._store_data(a, s, st, d), 0)
                 years = [d['YEAR'] for d in data]
                 ghi = [d['GHI_kWh_m2_year'] for d in data]
-                addr_charts.append((src_name, years, ghi))
+                addr_charts.append((src_name, years, ghi, stats))
                 self._update_log(f'[{addr}] {src_name} completed')
                 self._update_progress(1)
             if addr_charts:
                 Clock.schedule_once(lambda dt, a=addr, charts=addr_charts: self._display_charts(a, charts), 0)
+            else:
+                # All sources failed for this address
+                self._update_log(f'❌ All sources failed for {addr}')
+                # Show popup error on main thread
+                Clock.schedule_once(lambda dt, a=addr: self._show_error_popup(a), 0)
             time.sleep(0.5)
         self._update_log('🎉 All tasks completed!')
         self.is_running = False
-        self._export_csv()
+        if not any_success:
+            Clock.schedule_once(lambda dt: self._show_no_data_popup(), 0)
+        else:
+            self._export_csv()
+
+    def _show_error_popup(self, addr):
+        popup = Popup(title='Collection Failed',
+                      content=Label(text=f'All data sources failed for:\n{addr}\nCheck network or address.'),
+                      size_hint=(0.8, 0.5))
+        popup.open()
+
+    def _show_no_data_popup(self):
+        popup = Popup(title='No Data Collected',
+                      content=Label(text='No valid data was collected from any address.\nPlease check network settings and try again.'),
+                      size_hint=(0.8, 0.5))
+        popup.open()
 
     def _store_data(self, addr, src_name, stats, data):
         if addr not in self.results:
@@ -485,21 +559,22 @@ class MainScreen(BoxLayout):
     def _display_charts(self, addr, charts):
         title_label = Label(text=f'📍 {addr}', size_hint_y=None, height=40, bold=True)
         self.chart_box.add_widget(title_label)
-        for src_name, years, ghi in charts:
+        for src_name, years, ghi, stats in charts:
             src_label = Label(text=f'📊 {src_name}', size_hint_y=None, height=30)
             self.chart_box.add_widget(src_label)
             chart_widget = LineChartWidget(x_values=years, y_values=ghi, size_hint_y=None, height=200)
             self.chart_box.add_widget(chart_widget)
-            stats = self.results.get(addr, {}).get(src_name)
-            if stats:
-                info = f"Avg {stats['avg']:.1f}   Max {stats['max']:.1f}   Min {stats['min']:.1f}   Stability {stats['stability']:.1f}%"
-                info_label = Label(text=info, size_hint_y=None, height=25, font_size='12sp')
-                self.chart_box.add_widget(info_label)
+            info = (f"Avg: {stats['avg']:.1f}   Max: {stats['max']:.1f}   Min: {stats['min']:.1f}   "
+                    f"Stability: {stats['stability']:.1f}%   Years: {stats['years']}")
+            info_label = Label(text=info, size_hint_y=None, height=25, font_size='12sp')
+            self.chart_box.add_widget(info_label)
         self.chart_box.height = len(self.chart_box.children) * 40 + 200 * len(charts)
 
     @mainthread
     def _update_log(self, msg):
-        self.log_label.text = msg + '\n' + self.log_label.text[:500]
+        self.log_text.text += f'\n{msg}'
+        # Auto-scroll to bottom (by moving cursor to end)
+        self.log_text.cursor = (0, len(self.log_text.text))
 
     @mainthread
     def _update_progress(self, step):
@@ -535,7 +610,7 @@ class MainScreen(BoxLayout):
                 writer.writerows(records)
             self._update_log(f'✅ CSV exported to internal storage: {filepath}')
             popup = Popup(title='Export Complete',
-                          content=Label(text=f'CSV saved to app internal directory\n{filepath}\nYou can access it via file manager.'),
+                          content=Label(text=f'CSV saved to app internal directory\n{filepath}\nYou can access it via ADB or file manager.'),
                           size_hint=(0.8, 0.5))
             popup.open()
         except Exception as e:
@@ -557,7 +632,7 @@ class SolarApp(App):
         except Exception as e:
             self._write_startup_log(f"Font setup failed: {e}")
 
-        # Runtime permissions (only network needed now)
+        # Runtime permissions (only network)
         if platform == 'android':
             try:
                 from android.permissions import request_permissions, Permission
