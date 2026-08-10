@@ -7,7 +7,7 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf
 source.exclude_exts = spec
 source.exclude_dirs = tests, bin, venv, __pycache__, .git
 version = 1.0.0
-requirements = python3,kivy==2.2.0,requests==2.31.0,geopy,pyjwt,setuptools
+requirements = python3,kivy,requests,geopy,pyjwt,setuptools
 orientation = portrait
 osx.kivy_version = 2.2.0
 fullscreen = 0
