@@ -55,6 +55,7 @@ from kivy.utils import platform
 from kivy.core.text import LabelBase
 from kivy.config import Config
 from kivy.resources import resource_find
+from kvdroid.tools.font import system_font
 
 # ==============================================================
 
@@ -545,17 +546,19 @@ class MainScreen(BoxLayout):
 # -------- App 类（极简且稳定的字体处理）-------
 class SolarApp(App):
     def build(self):
-        # ---------- 彻底避免自定义字体，直接使用系统字体 ----------
+        # ---------- 自动加载系统中文字体（通过 kvdroid） ----------
         try:
-            # 方案：强制使用系统默认字体（Android 上会自动支持中文）
-            # 不需要任何外部字体文件，也不需要注册自定义字体名
-            Config.set('kivy', 'default_font', ['Roboto', 'data/fonts/DejaVuSans.ttf'])
-            # 清除字体缓存
-            from kivy.core.text import Label as CoreLabel
-            CoreLabel._font_cache.clear()
-            print("✅ 使用系统字体 Roboto（支持中文）")
+            chinese_font = system_font('zh')
+            if chinese_font:
+                Config.set('kivy', 'default_font', [chinese_font])
+                # 清除字体缓存，使新设置立即生效
+                from kivy.core.text import Label as CoreLabel
+                CoreLabel._font_cache.clear()
+                print(f"✅ 使用系统中文字体: {chinese_font}")
+            else:
+                print("⚠️ 未找到系统中文字体")
         except Exception as e:
-            print(f"⚠️ 字体设置失败: {e}")
+            print(f"⚠️ 加载系统字体失败: {e}")
         # --------------------------------------------
 
         # ---- 运行时权限申请（Android 6+） ----
