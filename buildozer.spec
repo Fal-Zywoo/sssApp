@@ -9,7 +9,6 @@ source.exclude_dirs = tests, bin, venv, __pycache__, .git
 version = 1.0.0
 requirements = python3,kivy,requests,geopy,pyjwt,setuptools
 orientation = portrait
-osx.kivy_version = 2.2.0
 fullscreen = 0
 android.permissions = INTERNET, ACCESS_NETWORK_STATE, WRITE_EXTERNAL_STORAGE, READ_EXTERNAL_STORAGE
 android.api = 31
