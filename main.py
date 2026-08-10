@@ -2,7 +2,7 @@
 """
 Android 光资源采集器（Kivy 版）
 无 pandas、无 matplotlib 依赖，使用 Kivy Canvas 绘图
-最后更新：2026.08.07 - 增强稳定性
+最后更新：2026.08.10 - 彻底移除外部存储依赖，避免权限问题
 """
 
 import os
@@ -12,22 +12,27 @@ import time
 import random
 import threading
 import csv
+import tempfile
 from datetime import datetime
 
-# ---- 全局异常捕获（将崩溃信息写入文件） ----
+# ---- 全局异常捕获（写入内部私有目录，无需权限） ----
 def global_exception_handler(exc_type, exc_value, exc_tb):
     error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
-    # 写入外部存储（如果权限允许）
     try:
-        log_dir = '/storage/emulated/0/Download' if os.path.exists('/storage/emulated/0') else os.path.expanduser('~/Downloads')
+        # 尝试写入当前应用私有目录
+        from kivy.app import App
+        app = App.get_running_app()
+        if app:
+            log_dir = app.user_data_dir
+        else:
+            log_dir = tempfile.gettempdir()
         os.makedirs(log_dir, exist_ok=True)
         with open(os.path.join(log_dir, 'app_crash.log'), 'a', encoding='utf-8') as f:
             f.write(f"\n--- Crash at {datetime.now()} ---\n{error_msg}\n")
     except:
         pass
-    # 打印到控制台（可能看不到）
+    # 打印到控制台（adb logcat 可见）
     print(error_msg)
-    # 调用默认处理
     sys.__excepthook__(exc_type, exc_value, exc_tb)
 
 sys.excepthook = global_exception_handler
@@ -54,26 +59,20 @@ from kivy.storage.jsonstore import JsonStore
 from kivy.utils import platform
 from kivy.core.text import LabelBase
 from kivy.config import Config
-from kivy.resources import resource_find
-from kvdroid.tools.font import system_font
 
 # ==============================================================
 
-# -------- 工具函数 --------
-def get_public_download_dir():
-    if platform == 'android':
-        try:
-            from android.storage import primary_external_storage_path
-            base = primary_external_storage_path()
-        except:
-            base = '/storage/emulated/0'
+# -------- 工具函数：所有文件操作指向内部存储 --------
+def get_app_data_dir():
+    """返回应用私有数据目录，无需权限"""
+    app = App.get_running_app()
+    if app:
+        return app.user_data_dir
     else:
-        base = os.path.expanduser('~/Downloads')
-    download_path = os.path.join(base, 'Download')
-    os.makedirs(download_path, exist_ok=True)
-    return download_path
+        # fallback（不应发生）
+        return os.path.expanduser('~/.solar_collector_data')
 
-# -------- 坐标解析（增加超时和重试） --------
+# -------- 坐标解析（保留 geopy） --------
 def get_coordinates(address, retries=2):
     print(f"🗺️ 解析地址: {address}")
     try:
@@ -92,7 +91,7 @@ def get_coordinates(address, retries=2):
         print(f"❌ 坐标解析异常: {e}")
     return None, None, None
 
-# -------- API 数据获取 --------
+# -------- API 数据获取（不变） --------
 def fetch_openmeteo_data(lat, lon, start_year, end_year, retries=3, delay=0.5):
     time.sleep(delay)
     url = "https://archive-api.open-meteo.com/v1/archive"
@@ -103,7 +102,7 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, retries=3, delay=0.5):
     }
     for _ in range(retries):
         try:
-            resp = requests.get(url, params=params, timeout=50)
+            resp = requests.get(url, params=params, timeout=30)
             if resp.status_code != 200:
                 time.sleep(2)
                 continue
@@ -188,7 +187,7 @@ def compute_statistics(data_list):
         'years': len(vals)
     }
 
-# ========== Canvas 绘图组件 ==========
+# ========== Canvas 绘图组件（不变） ==========
 class LineChartWidget(Widget):
     def __init__(self, x_values, y_values, title='', x_label='年份', y_label='GHI (kWh/m²)', **kwargs):
         super().__init__(**kwargs)
@@ -237,7 +236,7 @@ class LineChartWidget(Widget):
 
 # =============================================
 
-# -------- 登录界面 --------
+# -------- 登录界面（不变） --------
 class LoginScreen(BoxLayout):
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', spacing=10, padding=20)
@@ -469,11 +468,7 @@ class MainScreen(BoxLayout):
                     self._update_log(f'[{addr}] {src_name} 数据无效')
                     self._update_progress(1)
                     continue
-                if addr not in self.results:
-                    self.results[addr] = {}
-                    self.yearly[addr] = {}
-                self.results[addr][src_name] = stats
-                self.yearly[addr][src_name] = data
+                Clock.schedule_once(lambda dt, a=addr, s=src_name, st=stats, d=data: self._store_data(a, s, st, d), 0)
                 years = [d['YEAR'] for d in data]
                 ghi = [d['GHI_kWh_m2_year'] for d in data]
                 addr_charts.append((src_name, years, ghi))
@@ -485,6 +480,13 @@ class MainScreen(BoxLayout):
         self._update_log('🎉 所有任务处理完成！')
         self.is_running = False
         self._export_csv()
+
+    def _store_data(self, addr, src_name, stats, data):
+        if addr not in self.results:
+            self.results[addr] = {}
+            self.yearly[addr] = {}
+        self.results[addr][src_name] = stats
+        self.yearly[addr][src_name] = data
 
     def _display_charts(self, addr, charts):
         title_label = Label(text=f'📍 {addr}', size_hint_y=None, height=40, bold=True)
@@ -527,57 +529,66 @@ class MainScreen(BoxLayout):
                     })
         if not records:
             return
-        download_dir = get_public_download_dir()
+        # 导出到应用内部存储（无需权限）
+        data_dir = get_app_data_dir()
+        os.makedirs(data_dir, exist_ok=True)
         time_str = datetime.now().strftime("%m%d_%H%M")
         filename = f"光资源逐年数据_{time_str}.csv"
-        filepath = os.path.join(download_dir, filename)
+        filepath = os.path.join(data_dir, filename)
         try:
             with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.DictWriter(f, fieldnames=records[0].keys())
                 writer.writeheader()
                 writer.writerows(records)
-            self._update_log(f'✅ CSV已导出: {filepath}')
-            popup = Popup(title='导出完成', content=Label(text=f'CSV已保存至\n{filepath}'),
-                          size_hint=(0.8, 0.4))
+            self._update_log(f'✅ CSV已导出到内部存储: {filepath}')
+            # 提示用户文件位置
+            popup = Popup(title='导出完成',
+                          content=Label(text=f'CSV已保存至应用内部目录\n{filepath}\n可通过文件管理器查看'),
+                          size_hint=(0.8, 0.5))
             popup.open()
         except Exception as e:
             self._update_log(f'❌ 导出失败: {e}')
 
-# -------- App 类（极简且稳定的字体处理）-------
+# -------- App 类（安全字体，简化权限）-------
 class SolarApp(App):
     def build(self):
-        # ---------- 自动加载系统中文字体（通过 kvdroid） ----------
-        try:
-            chinese_font = system_font('zh')
-            if chinese_font:
-                Config.set('kivy', 'default_font', [chinese_font])
-                # 清除字体缓存，使新设置立即生效
-                from kivy.core.text import Label as CoreLabel
-                CoreLabel._font_cache.clear()
-                print(f"✅ 使用系统中文字体: {chinese_font}")
-            else:
-                print("⚠️ 未找到系统中文字体")
-        except Exception as e:
-            print(f"⚠️ 加载系统字体失败: {e}")
-        # --------------------------------------------
+        # ---------- 初始化日志（内部存储） ----------
+        self._write_startup_log("App starting...")
 
-        # ---- 运行时权限申请（Android 6+） ----
+        # ---------- 安全字体设置 ----------
+        try:
+            if platform == 'android':
+                # 使用系统自带字体（通常存在）
+                LabelBase.register(name='Droid', fn_regular='DroidSansFallback.ttf')
+                Config.set('kivy', 'default_font', ['Droid'])
+                self._write_startup_log("Font set to DroidSansFallback")
+            else:
+                pass
+        except Exception as e:
+            self._write_startup_log(f"Font setup failed: {e}")
+
+        # ---- 运行时权限（仅请求网络，外部存储不再需要） ----
         if platform == 'android':
             try:
                 from android.permissions import request_permissions, Permission
-                request_permissions([
-                    Permission.WRITE_EXTERNAL_STORAGE,
-                    Permission.READ_EXTERNAL_STORAGE,
-                    Permission.INTERNET
-                ])
-                print("✅ 权限已请求")
+                # 只请求网络权限（INTERNET 已自动拥有，但显式请求也无妨）
+                request_permissions([Permission.INTERNET])
+                self._write_startup_log("Permissions requested")
             except Exception as e:
-                print(f"⚠️ 权限请求失败: {e}")
+                self._write_startup_log(f"Permission request error: {e}")
 
         self.token = None
         self.server_url = None
         self.login_screen = LoginScreen(self)
         return self.login_screen
+
+    def _write_startup_log(self, msg):
+        try:
+            log_path = os.path.join(self.user_data_dir, 'startup.log')
+            with open(log_path, 'a', encoding='utf-8') as f:
+                f.write(f"{datetime.now()}: {msg}\n")
+        except:
+            pass
 
     def show_main_screen(self):
         self.main_screen = MainScreen(self)
