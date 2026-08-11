@@ -680,33 +680,44 @@ class SolarApp(App):
     def build(self):
         self._write_startup_log("App starting...")
 
-        # ---------- 字体加载：优先使用系统字体 ----------
-        # 常见 Android 系统字体名称列表（按优先级排序）
-        system_fonts = [
+        # ---------- 字体加载：遍历系统字体目录 ----------
+        import os
+
+        # 常见的系统字体目录（Android）
+        font_dirs = [
+            '/system/fonts/',
+            '/system/fonts/fallback/',
+            '/system/fonts/',
+        ]
+        # 常见中文字体文件名（按概率排序）
+        font_files = [
             'DroidSansFallback.ttf',        # 老设备
             'NotoSansCJK-Regular.ttc',      # Android 8+
             'NotoSansSC-Regular.otf',       # Android 10+ 简体中文
-            'NotoSansCJKsc-Regular.otf',    # 另一种命名
+            'NotoSansCJKsc-Regular.otf',
+            'NotoSansCJK.ttc',
+            'NotoSans-Regular.ttf',
         ]
 
         font_loaded = False
-        for font_name in system_fonts:
-            try:
-                # 尝试注册该字体
-                LabelBase.register(name='SystemFont', fn_regular=font_name)
-                # 设置为默认字体
-                Config.set('kivy', 'default_font', ['SystemFont'])
-                self._write_startup_log(f"✅ System font loaded: {font_name}")
-                font_loaded = True
+        for dir_path in font_dirs:
+            for fname in font_files:
+                full_path = os.path.join(dir_path, fname)
+                if os.path.exists(full_path):
+                    try:
+                        LabelBase.register(name='SystemFont', fn_regular=full_path)
+                        Config.set('kivy', 'default_font', ['SystemFont'])
+                        self._write_startup_log(f"✅ System font loaded: {full_path}")
+                        font_loaded = True
+                        break
+                    except Exception as e:
+                        self._write_startup_log(f"⚠️ Registering {full_path} failed: {e}")
+                        continue
+            if font_loaded:
                 break
-            except Exception as e:
-                # 如果失败，继续尝试下一个
-                self._write_startup_log(f"⚠️ Failed to load {font_name}: {e}")
-                continue
 
         if not font_loaded:
             self._write_startup_log("❌ All system fonts failed, using Kivy default")
-            # 保留 Kivy 默认字体（可能显示方框，但不会崩溃）
 
         # ---------- 权限请求 ----------
         if platform == 'android':
@@ -740,6 +751,7 @@ class SolarApp(App):
             self._write_startup_log(error_text)
             self.root.clear_widgets()
             self.root.add_widget(Label(text=error_text, color=(1,0,0,1)))
+
 
 if __name__ == '__main__':
     SolarApp().run()
