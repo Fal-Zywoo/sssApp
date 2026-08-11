@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Android Solar Radiation Collector (Kivy Version) - Optimized
-Last updated: 2026.08.10
+Android Solar Radiation Collector (Kivy Version) - Fixed
+Last updated: 2026.08.11
 """
 
 import os
@@ -55,6 +55,7 @@ from kivy.clock import Clock, mainthread
 from kivy.utils import platform
 from kivy.core.text import LabelBase
 from kivy.config import Config
+from kivy.resources import resource_find   # <-- 新增
 
 # ==============================================================
 
@@ -286,7 +287,7 @@ class LineChartWidget(Widget):
 
 # =============================================
 
-# -------- Login Screen (unchanged, except exception handling) --------
+# -------- Login Screen (unchanged) --------
 class LoginScreen(BoxLayout):
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', spacing=10, padding=20)
@@ -403,10 +404,10 @@ class MainScreen(BoxLayout):
             start_btn.bind(on_press=self.start_processing)
             self.add_widget(start_btn)
 
-            # Log output
+            # Log output (FIXED: removed valign)
             log_box = BoxLayout(orientation='vertical', size_hint_y=None, height=250)
             log_box.add_widget(Label(text='Log Output:', size_hint_y=None, height=30))
-            self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left', valign='top')
+            self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left')  # <-- valign removed
             self.log_text.bind(size=self.log_text.setter('text_size'))
             log_scroll = ScrollView()
             log_scroll.add_widget(self.log_text)
@@ -674,18 +675,26 @@ class MainScreen(BoxLayout):
         except Exception as e:
             self._update_log(f'Share failed: {e}')
 
-# -------- App Class --------
+# -------- App Class (with improved font handling) --------
 class SolarApp(App):
     def build(self):
         self._write_startup_log("App starting...")
-        try:
-            if platform == 'android':
-                LabelBase.register(name='Droid', fn_regular='DroidSansFallback.ttf')
-                Config.set('kivy', 'default_font', ['Droid'])
-                self._write_startup_log("Font set to DroidSansFallback")
-        except Exception as e:
-            self._write_startup_log(f"Font setup failed: {e}")
 
+        # ---------- 中文字体加载（使用 resource_find） ----------
+        font_path = resource_find('assets/fonts/NotoSansCJKsc-Regular.otf')
+        if font_path:
+            try:
+                LabelBase.register(name='Chinese', fn_regular=font_path)
+                Config.set('kivy', 'default_font', ['Chinese'])
+                self._write_startup_log(f"✅ Chinese font loaded from {font_path}")
+            except Exception as e:
+                self._write_startup_log(f"Font registration error: {e}")
+        else:
+            self._write_startup_log("⚠️ Chinese font not found in assets, using system default")
+            # 可选的降级：尝试系统字体（不同设备名称可能不同）
+            # Config.set('kivy', 'default_font', ['DroidSansFallback', 'NotoSansCJK-Regular'])
+
+        # ---------- 权限请求 ----------
         if platform == 'android':
             try:
                 from android.permissions import request_permissions, Permission
