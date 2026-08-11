@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Android Solar Radiation Collector - Multi-tab UI with Share
+Android Solar Radiation Collector - Final with Open-Meteo Unit Autodetect
 Last updated: 2026.08.11
 """
 
@@ -56,7 +56,6 @@ from kivy.core.text import LabelBase
 from kivy.config import Config
 from kivy.uix.checkbox import CheckBox
 from kivy.uix.tabbedpanel import TabbedPanel, TabbedPanelHeader
-from kivy.core.image import Image as CoreImage
 
 # ==============================================================
 
@@ -94,6 +93,15 @@ def detect_proxy_enhanced():
             pass
     return proxies if proxies else None
 
+def set_proxy_env(proxies):
+    if proxies:
+        if 'http' in proxies:
+            os.environ['HTTP_PROXY'] = proxies['http']
+            os.environ['http_proxy'] = proxies['http']
+        if 'https' in proxies:
+            os.environ['HTTPS_PROXY'] = proxies['https']
+            os.environ['https_proxy'] = proxies['https']
+
 # -------- Geocoding with cache and proxy support --------
 _geocode_cache = {}
 
@@ -112,14 +120,20 @@ def get_coordinates(address, proxies=None, retries=2):
                     return result
             except Exception as e:
                 print(f"⚠️ Attempt {attempt+1} failed: {e}")
+                app = App.get_running_app()
+                if app and hasattr(app, 'main_screen'):
+                    app.main_screen._update_log(f"Geocode attempt {attempt+1}: {traceback.format_exc()}")
                 time.sleep(2 ** attempt)
             time.sleep(1)
     except Exception as e:
         print(f"❌ Geocoding error: {e}")
         traceback.print_exc()
+        app = App.get_running_app()
+        if app and hasattr(app, 'main_screen'):
+            app.main_screen._update_log(f"Geocode fatal error: {traceback.format_exc()}")
     return None, None, None
 
-# -------- API data fetchers (unchanged) --------
+# -------- API data fetchers (with unit autodetect for Open-Meteo) --------
 def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3):
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
@@ -141,13 +155,30 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
                         continue
                     year = int(dt[:4])
                     yearly[year] = yearly.get(year, 0.0) + val
-                result = []
+                # 先按 Wh->kWh 转换
+                result_wh = []
                 for y in range(start_year, end_year + 1):
                     if y in yearly:
-                        ghi = yearly[y] / 1000.0
-                        result.append({'YEAR': y, 'GHI_kWh_m2_year': ghi})
-                if len(result) >= 2:
-                    return result
+                        ghi_wh = yearly[y] / 1000.0  # 转为 kWh
+                        result_wh.append({'YEAR': y, 'GHI_kWh_m2_year': ghi_wh})
+
+                # 自动判断：如果平均年辐射小于 50 kWh/m²，很可能单位有误，尝试不除以1000（即认为是kWh/年）
+                if result_wh:
+                    avg = sum(d['GHI_kWh_m2_year'] for d in result_wh) / len(result_wh)
+                    if avg < 50:
+                        # 认为原始数据已是 kWh/m²/日，累加后就是年总量，不需要除1000
+                        result_kwh = []
+                        for y in range(start_year, end_year + 1):
+                            if y in yearly:
+                                ghi_kwh = yearly[y]  # 直接使用
+                                result_kwh.append({'YEAR': y, 'GHI_kWh_m2_year': ghi_kwh})
+                        app = App.get_running_app()
+                        if app and hasattr(app, 'main_screen'):
+                            app.main_screen._update_log(f"⚠️ Open-Meteo data seems low (avg {avg:.1f} kWh). "
+                                                        f"Switching to no-divide mode (assume kWh/m²/每日).")
+                        return result_kwh
+                    else:
+                        return result_wh
                 else:
                     continue
             elif resp.status_code >= 500:
@@ -379,6 +410,7 @@ class MainScreen(BoxLayout):
         self.completed = 0
         self.total_tasks = 0
         self.proxies = detect_proxy_enhanced()
+        set_proxy_env(self.proxies)
         self.error_summary = []
         self.last_rows = []
         self.last_start = 2010
@@ -387,7 +419,7 @@ class MainScreen(BoxLayout):
         # 创建 TabbedPanel
         self.tabs = TabbedPanel(do_default_tab=False)
         self.tabs.default_tab_text = 'Data'
-        self.tabs.tab_width = 120  # 适当宽度
+        self.tabs.tab_width = 120
 
         # ---- Tab1: 数据 ----
         tab_data = TabbedPanelHeader(text='📊 Data')
@@ -481,14 +513,12 @@ class MainScreen(BoxLayout):
         # ---- Tab3: 图表 ----
         tab_chart = TabbedPanelHeader(text='📈 Charts')
         chart_content = BoxLayout(orientation='vertical', spacing=5, padding=5)
-        # 图表滚动区域
         self.chart_container = ScrollView(bar_width=10, bar_color=[0.5,0.5,0.5,1])
         self.chart_box = BoxLayout(orientation='vertical', size_hint_y=None)
         self.chart_box.bind(minimum_height=self.chart_box.setter('height'))
         self.chart_container.add_widget(self.chart_box)
         chart_content.add_widget(self.chart_container)
 
-        # 分享按钮
         share_btn = Button(text='📤 Share Data (CSV + Chart)', size_hint_y=None, height=50, background_color=(0.3,0.6,0.9,1))
         share_btn.bind(on_press=self.share_data)
         chart_content.add_widget(share_btn)
@@ -497,7 +527,7 @@ class MainScreen(BoxLayout):
         self.tabs.add_widget(tab_chart)
 
         self.add_widget(self.tabs)
-        self._update_log(f'Proxy: {self.proxies if self.proxies else "None (direct)"}')
+        self._update_log(f'Proxy env set: {self.proxies if self.proxies else "None"}')
 
     # ---- Table operations (unchanged) ----
     def add_table_row(self, addr='', lat='', lon='', contract=''):
@@ -559,12 +589,14 @@ class MainScreen(BoxLayout):
             endpoints = [
                 ('Open-Meteo', 'https://archive-api.open-meteo.com/v1/archive', {'latitude':31.23, 'longitude':121.47, 'start_date':'2020-01-01', 'end_date':'2020-01-02', 'daily':'shortwave_radiation_sum', 'timezone':'Asia/Shanghai'}),
                 ('NASA POWER', 'https://power.larc.nasa.gov/api/temporal/daily/point', {'parameters':'ALLSKY_SFC_SW_DWN','community':'RE','longitude':121.47,'latitude':31.23,'start':'20200101','end':'20200102','format':'JSON','user':'pvuser'}),
-                ('PVGIS (fallback to NASA)', 'https://power.larc.nasa.gov/api/temporal/daily/point', {'parameters':'ALLSKY_SFC_SW_DWN','community':'RE','longitude':121.47,'latitude':31.23,'start':'20200101','end':'20200102','format':'JSON','user':'pvuser'})
+                ('Nominatim (OSM)', 'https://nominatim.openstreetmap.org/search', {'q':'Shanghai, China', 'format':'json'})
             ]
             for name, url, params in endpoints:
                 try:
                     if 'open-meteo' in url:
                         resp = requests.get(url, params=params, timeout=10, proxies=self.proxies)
+                    elif 'nominatim' in url:
+                        resp = requests.get(url, params=params, timeout=10, proxies=self.proxies, headers={'User-Agent':'solar_app'})
                     else:
                         resp = requests.get(url, params=params, timeout=10, proxies=self.proxies, headers={'User-Agent':'Mozilla/5.0'})
                     if resp.status_code == 200:
@@ -687,6 +719,10 @@ class MainScreen(BoxLayout):
                     self._update_log(f'❌ {err_msg}')
                     continue
                 any_success = True
+                # 打印样本数据（前3年）以辅助诊断
+                sample = data[:3] if len(data) >= 3 else data
+                sample_str = ', '.join([f"{d['YEAR']}:{d['GHI_kWh_m2_year']:.1f}" for d in sample])
+                self._update_log(f'[{addr}] {src_name} sample: {sample_str}')
                 Clock.schedule_once(lambda dt, a=addr, s=src_name, st=stats, d=data: self._store_data(a, s, st, d), 0)
                 years = [d['YEAR'] for d in data]
                 ghi = [d['GHI_kWh_m2_year'] for d in data]
@@ -713,12 +749,12 @@ class MainScreen(BoxLayout):
     def _geocode_address(self, addr):
         if addr in self._geocode_cache:
             return self._geocode_cache[addr]
-        lat, lon, full = get_coordinates(addr, proxies=self.proxies)   # 传递代理
+        lat, lon, full = get_coordinates(addr, proxies=self.proxies)
         if lat is not None:
             self._geocode_cache[addr] = (lat, lon, full)
         return lat, lon, full
 
-    # ---- Popups (unchanged) ----
+    # ---- Popups ----
     def _show_error_popup(self, addr):
         popup = Popup(title='Collection Failed',
                       content=Label(text=f'All data sources failed for:\n{addr}\nCheck network or address.'),
@@ -772,7 +808,7 @@ class MainScreen(BoxLayout):
         if self.total_tasks > 0:
             self.progress.value = min(100, int(self.completed / self.total_tasks * 100))
 
-    # ---- CSV Export (unchanged) ----
+    # ---- CSV Export ----
     def _export_csv(self):
         if not self.yearly:
             self._update_log('⚠️ No data to export')
@@ -805,10 +841,8 @@ class MainScreen(BoxLayout):
                 writer.writeheader()
                 writer.writerows(records)
             self._update_log(f'✅ CSV exported: {filepath}')
-            # 保存路径供分享使用
             self._last_csv_path = filepath
             if platform == 'android':
-                # 自动分享（但用户可能想通过按钮手动分享，这里只导出）
                 pass
             else:
                 popup = Popup(title='Export Complete',
@@ -818,44 +852,25 @@ class MainScreen(BoxLayout):
         except Exception as e:
             self._update_log(f'❌ Export failed: {e}')
 
-    # ---- Share Data (新增) ----
+    # ---- Share Data ----
     def share_data(self, instance):
-        """分享 CSV 和图表截图（多附件）"""
         if not self.yearly:
             self._update_log('⚠️ No data to share, collect data first.')
             popup = Popup(title='No Data', content=Label(text='Please collect data first.'), size_hint=(0.8,0.4))
             popup.open()
             return
 
-        # 1. 确保CSV已导出
         if not hasattr(self, '_last_csv_path') or not os.path.exists(self._last_csv_path):
-            self._export_csv()  # 重新导出
+            self._export_csv()
             if not hasattr(self, '_last_csv_path') or not os.path.exists(self._last_csv_path):
                 self._update_log('❌ CSV export failed, cannot share.')
                 return
 
-        # 2. 截图图表区域（整个 chart_box 或 container）
-        # 获取当前显示的第一个图表（如果有）
-        chart_container = self.chart_container
-        # 截图整个 chart_container 的内容
-        # 由于 chart_box 可能超出屏幕，我们只截取可见区域，但为了完整，最好截图 chart_box 全部内容
-        # 使用 export_to_png 需要 Widget 大小正确，我们可以临时将 chart_box 尺寸调整为其实际内容高度
-        # 但为了简单，我们截取整个 chart_container 的可见区域，这只能截取当前屏幕可见部分。
-        # 改进：遍历 chart_box 所有子元素，分别截图？更简单的是利用 Kivy 的 export_to_png 整个 chart_box。
-        # 注意：chart_box 可能很大，但可以导出整个画布。
         try:
-            # 保存图表截图到临时文件
             chart_box = self.chart_box
-            # 强制更新布局
             chart_box.do_layout()
-            # 设置 chart_box 的高度为实际内容高度
-            # 但 size_hint_y=None 已经设置了 height，我们确保它足够
-            # 为了避免太高的图片，我们限制最大高度为 2000 像素
-            target_height = min(chart_box.height, 2000)
-            # 创建临时文件
             import tempfile
             img_path = os.path.join(tempfile.gettempdir(), f'chart_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
-            # 使用 export_to_png
             chart_box.export_to_png(img_path)
             self._update_log(f'📸 Chart saved to {img_path}')
         except Exception as e:
@@ -864,10 +879,9 @@ class MainScreen(BoxLayout):
             popup.open()
             return
 
-        # 3. Android 分享多个文件
         if platform == 'android':
             try:
-                from jnius import autoclass, cast
+                from jnius import autoclass
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 Intent = autoclass('android.content.Intent')
                 Uri = autoclass('android.net.Uri')
@@ -875,13 +889,10 @@ class MainScreen(BoxLayout):
                 ArrayList = autoclass('java.util.ArrayList')
                 context = PythonActivity.mActivity
 
-                # 构建 URI 列表
                 uris = ArrayList()
-                # CSV
                 csv_file = File(self._last_csv_path)
                 csv_uri = Uri.fromFile(csv_file)
                 uris.add(csv_uri)
-                # PNG
                 png_file = File(img_path)
                 png_uri = Uri.fromFile(png_file)
                 uris.add(png_uri)
@@ -899,16 +910,10 @@ class MainScreen(BoxLayout):
                 popup = Popup(title='Share Error', content=Label(text=f'Share failed: {e}'), size_hint=(0.8,0.4))
                 popup.open()
         else:
-            # 桌面环境：提示文件位置
             popup = Popup(title='Share on Desktop',
                           content=Label(text=f'CSV: {self._last_csv_path}\nChart: {img_path}'),
                           size_hint=(0.8,0.5))
             popup.open()
-
-    # ---- (保留的旧分享方法，可忽略) ----
-    def _share_file_android(self, filepath):
-        # 此方法已被 share_data 替代，保留空壳以免报错
-        pass
 
 # -------- App Class --------
 class SolarApp(App):
