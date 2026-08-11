@@ -1,20 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Android Solar Radiation Collector (Kivy Version) - Final Fix
-Last updated: 2026.08.11
+Android Solar Radiation Collector (Kivy Version) - Final Refactored
+Last updated: 2026.08.11 (Fixed units, progress, stop, validation, etc.)
 """
 
 import os
 import sys
 import traceback
 import time
-import random   # 保留，虽然当前未使用，但可能用于未来扩展
 import threading
 import csv
 import tempfile
 import urllib.request
 from datetime import datetime
 import logging
+import configparser          # 标准库，用于保存配置
 
 # ---- Global exception handler ----
 def global_exception_handler(exc_type, exc_value, exc_tb):
@@ -55,7 +55,7 @@ from kivy.clock import Clock, mainthread
 from kivy.utils import platform
 from kivy.core.text import LabelBase
 from kivy.config import Config
-from kivy.resources import resource_find   # <-- 保留备用，但未使用
+from kivy.uix.checkbox import CheckBox   # 用于记住登录
 
 # ==============================================================
 
@@ -153,7 +153,8 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
                 result = []
                 for y in range(start_year, end_year + 1):
                     if y in yearly:
-                        ghi = yearly[y] / 3.6
+                        # 【修正A】yearly[y] 是年累计 Wh，除以1000得到 kWh
+                        ghi = yearly[y] / 1000.0
                         result.append({'YEAR': y, 'GHI_kWh_m2_year': ghi})
                 if len(result) >= 2:
                     return result
@@ -169,12 +170,18 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
         except requests.exceptions.Timeout:
             time.sleep(2 ** attempt)
             continue
-        except Exception:
+        except Exception as e:
+            # 【修正C】记录详细异常
+            app = App.get_running_app()
+            if app and hasattr(app, 'main_screen'):
+                app.main_screen._update_log(f"Open-Meteo error: {traceback.format_exc()}")
             time.sleep(2 ** attempt)
             continue
     return None
 
 def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3):
+    # 【修正K】NASA POWER 的 ALLSKY_SFC_SW_DWN 单位是 kWh/m²/day（日平均值）
+    # 此处累加日值得到年总量（单位 kWh/m²/年），无需再转换
     url = "https://power.larc.nasa.gov/api/temporal/daily/point"
     params = {
         "parameters": "ALLSKY_SFC_SW_DWN", "community": "RE",
@@ -206,7 +213,10 @@ def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3):
         except requests.exceptions.Timeout:
             time.sleep(2 ** attempt)
             continue
-        except Exception:
+        except Exception as e:
+            app = App.get_running_app()
+            if app and hasattr(app, 'main_screen'):
+                app.main_screen._update_log(f"NASA error: {traceback.format_exc()}")
             time.sleep(2 ** attempt)
             continue
     return None
@@ -302,11 +312,50 @@ class LoginScreen(BoxLayout):
         self.add_widget(Label(text='Password'))
         self.pass_input = TextInput(password=True, multiline=False)
         self.add_widget(self.pass_input)
+
+        # 【修正I】记住密码选项（只记住服务器和用户名，不记密码）
+        remember_box = BoxLayout(size_hint_y=None, height=40, spacing=10)
+        self.remember_cb = CheckBox(active=False)
+        remember_box.add_widget(self.remember_cb)
+        remember_box.add_widget(Label(text='Remember server & username'))
+        self.add_widget(remember_box)
+
         self.login_btn = Button(text='Login', size_hint_y=None, height=50)
         self.login_btn.bind(on_press=self.do_login)
         self.add_widget(self.login_btn)
         self.status_label = Label(text='', size_hint_y=None, height=30)
         self.add_widget(self.status_label)
+
+        # 加载保存的配置
+        self._load_config()
+
+    def _load_config(self):
+        try:
+            config = configparser.ConfigParser()
+            config_path = os.path.join(self.app.user_data_dir, 'config.ini')
+            if os.path.exists(config_path):
+                config.read(config_path, encoding='utf-8')
+                if 'login' in config:
+                    self.server_input.text = config['login'].get('server', 'local')
+                    self.user_input.text = config['login'].get('username', 'admin')
+                    self.remember_cb.active = config['login'].getboolean('remember', False)
+        except:
+            pass
+
+    def _save_config(self):
+        try:
+            config = configparser.ConfigParser()
+            config['login'] = {
+                'server': self.server_input.text.strip(),
+                'username': self.user_input.text.strip(),
+                'remember': str(self.remember_cb.active)
+            }
+            config_path = os.path.join(self.app.user_data_dir, 'config.ini')
+            os.makedirs(self.app.user_data_dir, exist_ok=True)
+            with open(config_path, 'w', encoding='utf-8') as f:
+                config.write(f)
+        except:
+            pass
 
     def do_login(self, instance):
         server = self.server_input.text.strip()
@@ -317,6 +366,8 @@ class LoginScreen(BoxLayout):
                 self.status_label.text = '✅ Local login successful'
                 self.app.token = 'fake_jwt_token'
                 self.app.server_url = 'local'
+                if self.remember_cb.active:
+                    self._save_config()
                 self.app.show_main_screen()
             else:
                 self.status_label.text = '❌ Invalid account or password'
@@ -330,6 +381,8 @@ class LoginScreen(BoxLayout):
                         self.app.token = token
                         self.app.server_url = server
                         self.status_label.text = '✅ Login successful'
+                        if self.remember_cb.active:
+                            self._save_config()
                         self.app.show_main_screen()
                     else:
                         self.status_label.text = '❌ No token returned'
@@ -338,7 +391,7 @@ class LoginScreen(BoxLayout):
             except Exception as e:
                 self.status_label.text = f'❌ Connection error: {str(e)}'
 
-# -------- Main Screen (fixed) --------
+# -------- Main Screen (refactored) --------
 class MainScreen(BoxLayout):
     def __init__(self, app, **kwargs):
         try:
@@ -376,7 +429,7 @@ class MainScreen(BoxLayout):
             self.table_container.add_widget(self.table_grid)
             self.add_widget(self.table_container)
 
-            # Buttons
+            # Buttons (added Stop button)
             btn_box = BoxLayout(size_hint_y=None, height=50, spacing=5)
             add_btn = Button(text='Add Row')
             add_btn.bind(on_press=self.add_row)
@@ -388,11 +441,15 @@ class MainScreen(BoxLayout):
             load_btn.bind(on_press=self.load_csv)
             save_btn = Button(text='Export CSV')
             save_btn.bind(on_press=self.save_csv)
+            # 【修正F】停止按钮
+            self.stop_btn = Button(text='Stop', background_color=(1,0.2,0.2,1))
+            self.stop_btn.bind(on_press=self.stop_processing)
             btn_box.add_widget(add_btn)
             btn_box.add_widget(del_btn)
             btn_box.add_widget(clear_btn)
             btn_box.add_widget(load_btn)
             btn_box.add_widget(save_btn)
+            btn_box.add_widget(self.stop_btn)
             self.add_widget(btn_box)
 
             # Progress
@@ -400,15 +457,14 @@ class MainScreen(BoxLayout):
             self.add_widget(self.progress)
 
             # Start button
-            start_btn = Button(text='Start Collecting', size_hint_y=None, height=50, background_color=(0.2,0.7,0.2,1))
-            start_btn.bind(on_press=self.start_processing)
-            self.add_widget(start_btn)
+            self.start_btn = Button(text='Start Collecting', size_hint_y=None, height=50, background_color=(0.2,0.7,0.2,1))
+            self.start_btn.bind(on_press=self.start_processing)
+            self.add_widget(self.start_btn)
 
-            # Log output (FIXED: removed valign and text_size bind)
+            # Log output
             log_box = BoxLayout(orientation='vertical', size_hint_y=None, height=250)
             log_box.add_widget(Label(text='Log Output:', size_hint_y=None, height=30))
             self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left')
-            # NOTE: No bind(size=...) here; TextInput handles its own text wrapping.
             log_scroll = ScrollView()
             log_scroll.add_widget(self.log_text)
             log_box.add_widget(log_scroll)
@@ -442,8 +498,9 @@ class MainScreen(BoxLayout):
         self.add_table_row()
 
     def del_row(self, instance):
+        # 【修正H】修正边界判断：确保至少保留表头
         children = self.table_grid.children
-        if len(children) > 8:  # 4 headers + at least 1 data row
+        if len(children) > 4:  # 4 headers, so if >4 there is at least one data row
             for _ in range(4):
                 self.table_grid.remove_widget(children[0])
         else:
@@ -463,6 +520,14 @@ class MainScreen(BoxLayout):
     def clear_log(self, instance):
         self.log_text.text = ''
 
+    # ---- Stop processing ----
+    def stop_processing(self, instance):
+        if self.is_running:
+            self.is_running = False
+            self._update_log('🛑 Stop requested, waiting for current task to finish...')
+        else:
+            self._update_log('⚠️ No running task to stop.')
+
     # ---- Processing ----
     def start_processing(self, instance):
         with self._lock:
@@ -476,6 +541,24 @@ class MainScreen(BoxLayout):
             self._update_log('❌ Please enter at least one address')
             self.is_running = False
             return
+
+        # 【修正B】年份验证
+        try:
+            start = int(self.start_year.text.strip())
+            end = int(self.end_year.text.strip())
+            if start > end:
+                self._update_log('❌ Start year must be <= End year')
+                self.is_running = False
+                return
+            if start < 1900 or end > 2100:
+                self._update_log('❌ Year must be between 1900 and 2100')
+                self.is_running = False
+                return
+        except ValueError:
+            self._update_log('❌ Invalid year format')
+            self.is_running = False
+            return
+
         rows = []
         items = list(children)[:-4]  # exclude headers
         for i in range(0, len(items), 4):
@@ -502,29 +585,34 @@ class MainScreen(BoxLayout):
             self._update_log('❌ No valid addresses')
             self.is_running = False
             return
-        start = int(self.start_year.text)
-        end = int(self.end_year.text)
+
+        # 【修正G】清空旧结果和图表
         self.results.clear()
         self.yearly.clear()
+        self.chart_box.clear_widgets()
+
         self.completed = 0
-        self.total_tasks = len(rows) * 3
+        self.total_tasks = len(rows)      # 【修正D】按地址计数
         self.progress.value = 0
         self._update_log(f'🚀 Processing {len(rows)} address(es)...')
-        self.chart_box.clear_widgets()
         threading.Thread(target=self._process_serial, args=(rows, start, end), daemon=True).start()
 
     def _process_serial(self, rows, start_year, end_year):
         any_success = False
         for idx, (addr, lat, lon, contract) in enumerate(rows, 1):
             if not self.is_running:
+                self._update_log('⏹️ Processing stopped by user.')
                 break
+
             # Geocode if needed
             if lat is None or lon is None:
                 lat, lon, _ = self._geocode_address(addr)
                 if lat is None:
                     self._update_log(f'❌ {addr} geocoding failed, skipped')
-                    self._update_progress(3)
+                    # 即使跳过，也计入进度
+                    self._update_progress(1)
                     continue
+
             sources = [
                 ('Open-Meteo', fetch_openmeteo_data),
                 ('NASA POWER', fetch_nasa_data),
@@ -538,12 +626,10 @@ class MainScreen(BoxLayout):
                 data = fetch_func(lat, lon, start_year, end_year, proxies=self.proxies)
                 if not data:
                     self._update_log(f'[{addr}] {src_name} failed')
-                    self._update_progress(1)
-                    continue
+                    continue   # 不计数，因为数据源失败不计入地址进度
                 stats = compute_statistics(data)
                 if stats is None:
                     self._update_log(f'[{addr}] {src_name} invalid data')
-                    self._update_progress(1)
                     continue
                 any_success = True
                 Clock.schedule_once(lambda dt, a=addr, s=src_name, st=stats, d=data: self._store_data(a, s, st, d), 0)
@@ -551,17 +637,22 @@ class MainScreen(BoxLayout):
                 ghi = [d['GHI_kWh_m2_year'] for d in data]
                 addr_charts.append((src_name, years, ghi, stats))
                 self._update_log(f'[{addr}] {src_name} completed')
-                self._update_progress(1)
             if addr_charts:
                 Clock.schedule_once(lambda dt, a=addr, charts=addr_charts: self._display_charts(a, charts), 0)
             else:
                 self._update_log(f'❌ All sources failed for {addr}')
                 Clock.schedule_once(lambda dt, a=addr: self._show_error_popup(a), 0)
+
+            # 【修正D】每个地址处理完后增加进度（无论成功几个数据源）
+            self._update_progress(1)
             time.sleep(0.5)
+
         self._update_log('🎉 All tasks completed!')
         with self._lock:
             self.is_running = False
-        if not any_success:
+
+        # 【修正E】导出前检查数据
+        if not any_success or not self.yearly:
             Clock.schedule_once(lambda dt: self._show_no_data_popup(), 0)
         else:
             self._export_csv()
@@ -594,6 +685,7 @@ class MainScreen(BoxLayout):
         self.yearly[addr][src_name] = data
 
     def _display_charts(self, addr, charts):
+        # 添加标题
         title_label = Label(text=f'📍 {addr}', size_hint_y=None, height=40, bold=True)
         self.chart_box.add_widget(title_label)
         for src_name, years, ghi, stats in charts:
@@ -605,7 +697,11 @@ class MainScreen(BoxLayout):
                     f"Stability: {stats['stability']:.1f}%   Years: {stats['years']}")
             info_label = Label(text=info, size_hint_y=None, height=25, font_size='12sp')
             self.chart_box.add_widget(info_label)
-        self.chart_box.height = len(self.chart_box.children) * 40 + 200 * len(charts)
+
+        # 【修正J】计算总高度：所有子控件高度之和 + 间距
+        total_height = sum(child.height for child in self.chart_box.children if hasattr(child, 'height'))
+        total_height += 10 * len(self.chart_box.children)  # 间距
+        self.chart_box.height = max(total_height, 100)
 
     @mainthread
     def _update_log(self, msg):
@@ -619,9 +715,15 @@ class MainScreen(BoxLayout):
             self.progress.value = min(100, int(self.completed / self.total_tasks * 100))
 
     def _export_csv(self):
+        # 【修正E】在开头检查数据
         if not self.yearly:
             self._update_log('⚠️ No data to export')
+            popup = Popup(title='Export Failed',
+                          content=Label(text='No data available to export.'),
+                          size_hint=(0.8, 0.5))
+            popup.open()
             return
+
         records = []
         for addr, sources in self.yearly.items():
             for src, data_list in sources.items():
@@ -634,7 +736,6 @@ class MainScreen(BoxLayout):
                     })
         if not records:
             return
-        # Use app.user_data_dir directly (more reliable)
         data_dir = self.app.user_data_dir
         os.makedirs(data_dir, exist_ok=True)
         time_str = datetime.now().strftime("%m%d_%H%M")
@@ -680,12 +781,10 @@ class SolarApp(App):
         self._write_startup_log("App starting...")
 
         # ---------- 字体加载：遍历系统字体目录 ----------
-        # 常见的系统字体目录（Android）
         font_dirs = [
             '/system/fonts/',
             '/system/fonts/fallback/',
         ]
-        # 常见中文字体文件名（按概率排序）
         font_files = [
             'DroidSansFallback.ttf',
             'NotoSansCJK-Regular.ttc',
@@ -747,7 +846,6 @@ class SolarApp(App):
             self._write_startup_log(error_text)
             self.root.clear_widgets()
             self.root.add_widget(Label(text=error_text, color=(1,0,0,1)))
-
 
 if __name__ == '__main__':
     SolarApp().run()
