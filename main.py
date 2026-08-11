@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Android Solar Radiation Collector - Final with Open-Meteo Unit Autodetect
+Android Solar Radiation Collector - SSL Fix for Nominatim & Open-Meteo unit fix
 Last updated: 2026.08.11
 """
 
@@ -14,6 +14,11 @@ import tempfile
 import urllib.request
 from datetime import datetime
 import configparser
+import warnings
+import urllib3
+
+# 禁用 SSL 警告（仅针对证书验证失败）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ---- Global exception handler ----
 def global_exception_handler(exc_type, exc_value, exc_tb):
@@ -102,7 +107,7 @@ def set_proxy_env(proxies):
             os.environ['HTTPS_PROXY'] = proxies['https']
             os.environ['https_proxy'] = proxies['https']
 
-# -------- Geocoding with cache and proxy support --------
+# -------- Geocoding with cache and SSL verification disabled (fixed param) --------
 _geocode_cache = {}
 
 def get_coordinates(address, proxies=None, retries=2):
@@ -110,7 +115,9 @@ def get_coordinates(address, proxies=None, retries=2):
     if address in _geocode_cache:
         return _geocode_cache[address]
     try:
-        geolocator = Nominatim(user_agent="solar_app_android", timeout=15, proxies=proxies)
+        # 关键修复：使用正确的参数 ssl_verify=False 禁用 SSL 证书验证
+        geolocator = Nominatim(user_agent="solar_app_android", timeout=15,
+                               proxies=proxies, ssl_verify=False)
         for attempt in range(retries):
             try:
                 location = geolocator.geocode(address, timeout=15)
@@ -133,7 +140,7 @@ def get_coordinates(address, proxies=None, retries=2):
             app.main_screen._update_log(f"Geocode fatal error: {traceback.format_exc()}")
     return None, None, None
 
-# -------- API data fetchers (with unit autodetect for Open-Meteo) --------
+# -------- API data fetchers (with correct unit conversion for Open-Meteo) --------
 def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3):
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
@@ -143,42 +150,26 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
     }
     for attempt in range(retries):
         try:
-            resp = requests.get(url, params=params, timeout=30, proxies=proxies)
+            resp = requests.get(url, params=params, timeout=30, proxies=proxies, verify=False)
             if resp.status_code == 200:
                 data = resp.json()
-                if 'daily' not in data:
+                daily = data.get('daily')
+                if not daily:
                     continue
-                daily = data['daily']
                 yearly = {}
                 for dt, val in zip(daily['time'], daily['shortwave_radiation_sum']):
                     if val is None:
                         continue
                     year = int(dt[:4])
                     yearly[year] = yearly.get(year, 0.0) + val
-                # 先按 Wh->kWh 转换
-                result_wh = []
+                # 正确转换：MJ/m² → kWh/m² (1 kWh = 3.6 MJ)
+                result = []
                 for y in range(start_year, end_year + 1):
                     if y in yearly:
-                        ghi_wh = yearly[y] / 1000.0  # 转为 kWh
-                        result_wh.append({'YEAR': y, 'GHI_kWh_m2_year': ghi_wh})
-
-                # 自动判断：如果平均年辐射小于 50 kWh/m²，很可能单位有误，尝试不除以1000（即认为是kWh/年）
-                if result_wh:
-                    avg = sum(d['GHI_kWh_m2_year'] for d in result_wh) / len(result_wh)
-                    if avg < 50:
-                        # 认为原始数据已是 kWh/m²/日，累加后就是年总量，不需要除1000
-                        result_kwh = []
-                        for y in range(start_year, end_year + 1):
-                            if y in yearly:
-                                ghi_kwh = yearly[y]  # 直接使用
-                                result_kwh.append({'YEAR': y, 'GHI_kWh_m2_year': ghi_kwh})
-                        app = App.get_running_app()
-                        if app and hasattr(app, 'main_screen'):
-                            app.main_screen._update_log(f"⚠️ Open-Meteo data seems low (avg {avg:.1f} kWh). "
-                                                        f"Switching to no-divide mode (assume kWh/m²/每日).")
-                        return result_kwh
-                    else:
-                        return result_wh
+                        ghi_kwh = yearly[y] / 3.6  # 除以3.6
+                        result.append({'YEAR': y, 'GHI_kWh_m2_year': ghi_kwh})
+                if result:
+                    return result
                 else:
                     continue
             elif resp.status_code >= 500:
@@ -205,7 +196,8 @@ def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3):
     headers = {'User-Agent': 'Mozilla/5.0'}
     for attempt in range(retries):
         try:
-            resp = requests.get(url, params=params, headers=headers, timeout=30, proxies=proxies)
+            resp = requests.get(url, params=params, headers=headers, timeout=30,
+                                proxies=proxies, verify=False)
             if resp.status_code == 200:
                 data = resp.json()
                 daily_data = data['properties']['parameter']['ALLSKY_SFC_SW_DWN']
@@ -594,11 +586,13 @@ class MainScreen(BoxLayout):
             for name, url, params in endpoints:
                 try:
                     if 'open-meteo' in url:
-                        resp = requests.get(url, params=params, timeout=10, proxies=self.proxies)
+                        resp = requests.get(url, params=params, timeout=10, proxies=self.proxies, verify=False)
                     elif 'nominatim' in url:
-                        resp = requests.get(url, params=params, timeout=10, proxies=self.proxies, headers={'User-Agent':'solar_app'})
+                        resp = requests.get(url, params=params, timeout=10, proxies=self.proxies,
+                                            headers={'User-Agent':'solar_app'}, verify=False)
                     else:
-                        resp = requests.get(url, params=params, timeout=10, proxies=self.proxies, headers={'User-Agent':'Mozilla/5.0'})
+                        resp = requests.get(url, params=params, timeout=10, proxies=self.proxies,
+                                            headers={'User-Agent':'Mozilla/5.0'}, verify=False)
                     if resp.status_code == 200:
                         self._update_log(f'✅ {name} reachable (status {resp.status_code})')
                     else:
@@ -719,7 +713,6 @@ class MainScreen(BoxLayout):
                     self._update_log(f'❌ {err_msg}')
                     continue
                 any_success = True
-                # 打印样本数据（前3年）以辅助诊断
                 sample = data[:3] if len(data) >= 3 else data
                 sample_str = ', '.join([f"{d['YEAR']}:{d['GHI_kWh_m2_year']:.1f}" for d in sample])
                 self._update_log(f'[{addr}] {src_name} sample: {sample_str}')
