@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Android Solar Radiation Collector (Kivy Version) - Final with Diagnostics & UI Improvements
+Android Solar Radiation Collector (Kivy Version) - Final with Table Fix
 Last updated: 2026.08.11
 """
 
@@ -364,7 +364,7 @@ class LoginScreen(BoxLayout):
             except Exception as e:
                 self.status_label.text = f'❌ Connection error: {str(e)}'
 
-# -------- Main Screen (Enhanced) --------
+# -------- Main Screen (Enhanced with Table Fix) --------
 class MainScreen(BoxLayout):
     def __init__(self, app, **kwargs):
         try:
@@ -378,12 +378,12 @@ class MainScreen(BoxLayout):
             self.completed = 0
             self.total_tasks = 0
             self.proxies = detect_proxy_enhanced()
-            self.error_summary = []   # 记录失败详情
-            self.last_rows = []       # 用于重试
+            self.error_summary = []
+            self.last_rows = []
             self.last_start = 2010
             self.last_end = 2025
 
-            # ---------- 参数输入行（改为两行，更紧凑） ----------
+            # 参数输入
             param_box = BoxLayout(orientation='vertical', size_hint_y=None, height=120, spacing=3)
             row1 = BoxLayout(spacing=5)
             row1.add_widget(Label(text='Start Year:', size_hint_x=0.3))
@@ -398,14 +398,13 @@ class MainScreen(BoxLayout):
             row2.add_widget(Label(text='Chart Type:', size_hint_x=0.3))
             self.chart_type = TextInput(text='line', multiline=False, size_hint_x=0.7)
             row2.add_widget(self.chart_type)
-            # 占位控件保持对齐
             row2.add_widget(Widget(size_hint_x=0.3))
             row2.add_widget(Widget(size_hint_x=0.7))
             param_box.add_widget(row2)
             self.add_widget(param_box)
 
-            # ---------- 表格区域 ----------
-            self.table_container = ScrollView(size_hint_y=0.25)  # 占用25%高度
+            # 表格
+            self.table_container = ScrollView(size_hint_y=0.25)
             self.table_grid = GridLayout(cols=4, size_hint_y=None, spacing=2, row_default_height=40)
             self.table_grid.bind(minimum_height=self.table_grid.setter('height'))
             for h in ['Address', 'Latitude', 'Longitude', 'Contract']:
@@ -414,7 +413,7 @@ class MainScreen(BoxLayout):
             self.table_container.add_widget(self.table_grid)
             self.add_widget(self.table_container)
 
-            # ---------- 按钮行（分两行，避免拥挤） ----------
+            # 按钮行
             btn_row1 = BoxLayout(size_hint_y=None, height=50, spacing=5)
             add_btn = Button(text='Add Row')
             add_btn.bind(on_press=self.add_row)
@@ -448,11 +447,11 @@ class MainScreen(BoxLayout):
             btn_row2.add_widget(self.test_btn)
             self.add_widget(btn_row2)
 
-            # ---------- 进度条 ----------
+            # 进度条
             self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=20)
             self.add_widget(self.progress)
 
-            # ---------- 日志区域（可滚动，设置滚动条样式） ----------
+            # 日志
             log_box = BoxLayout(orientation='vertical', size_hint_y=0.3, spacing=2)
             log_box.add_widget(Label(text='Log Output:', size_hint_y=None, height=20, font_size='12sp'))
             self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left', font_size='11sp')
@@ -464,7 +463,7 @@ class MainScreen(BoxLayout):
             log_box.add_widget(clear_log_btn)
             self.add_widget(log_box)
 
-            # ---------- 图表区域 ----------
+            # 图表
             self.chart_container = ScrollView(size_hint_y=0.4, bar_width=10, bar_color=[0.5,0.5,0.5,1])
             self.chart_box = BoxLayout(orientation='vertical', size_hint_y=None)
             self.chart_box.bind(minimum_height=self.chart_box.setter('height'))
@@ -502,7 +501,7 @@ class MainScreen(BoxLayout):
             self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True, font_size='12sp'))
 
     def load_csv(self, instance):
-        pass  # stub
+        pass
 
     def save_csv(self, instance):
         self._export_csv()
@@ -526,11 +525,9 @@ class MainScreen(BoxLayout):
         if self.is_running:
             self._update_log('⚠️ Task already running, stop first.')
             return
-        # 复用上次参数
         self.start_year.text = str(self.last_start)
         self.end_year.text = str(self.last_end)
         self._update_log('🔄 Retrying last task...')
-        # 直接调用处理，但先清空错误记录
         self.error_summary.clear()
         self._start_processing_from_rows(self.last_rows, self.last_start, self.last_end)
 
@@ -562,36 +559,46 @@ class MainScreen(BoxLayout):
         if self.is_running:
             self._update_log('⚠️ Already running.')
             return
-        # 收集地址
+
         children = self.table_grid.children
         if len(children) <= 4:
             self._update_log('❌ Please enter at least one address')
             return
+
+        # ---- 修正：正确读取表格行（逆序转正序） ----
+        # children 是逆序（最后添加的在前），我们需要反转
+        # 先去除表头（最后4个是表头 Label）
+        items = list(children)[:-4]   # 取出所有输入框，但顺序仍为逆序
+        # 将 items 按行分组，每组4个（地址、纬度、经度、合同），但因为是逆序，需要反转整个列表
+        items_reversed = list(reversed(items))  # 现在正序：第一行地址、纬度、经度、合同，第二行...
         rows = []
-        items = list(children)[:-4]
-        for i in range(0, len(items), 4):
-            addr = items[i].text.strip()
-            lat = items[i+1].text.strip()
-            lon = items[i+2].text.strip()
-            contract = items[i+3].text.strip()
+        for i in range(0, len(items_reversed), 4):
+            if i+3 >= len(items_reversed):
+                break
+            addr = items_reversed[i].text.strip()
+            lat_text = items_reversed[i+1].text.strip()
+            lon_text = items_reversed[i+2].text.strip()
+            contract_text = items_reversed[i+3].text.strip()
             if not addr:
                 continue
             try:
-                lat_val = float(lat) if lat else None
+                lat_val = float(lat_text) if lat_text else None
             except:
                 lat_val = None
             try:
-                lon_val = float(lon) if lon else None
+                lon_val = float(lon_text) if lon_text else None
             except:
                 lon_val = None
             try:
-                contract_val = float(contract) if contract else None
+                contract_val = float(contract_text) if contract_text else None
             except:
                 contract_val = None
             rows.append((addr, lat_val, lon_val, contract_val))
+
         if not rows:
             self._update_log('❌ No valid addresses')
             return
+
         # 验证年份
         try:
             start = int(self.start_year.text.strip())
@@ -603,7 +610,6 @@ class MainScreen(BoxLayout):
             self._update_log('❌ Invalid year format.')
             return
 
-        # 保存用于重试
         self.last_rows = rows[:]
         self.last_start = start
         self.last_end = end
@@ -632,7 +638,6 @@ class MainScreen(BoxLayout):
                 self._update_log('⏹️ Stopped by user.')
                 break
 
-            # Geocode
             if lat is None or lon is None:
                 lat, lon, _ = self._geocode_address(addr)
                 if lat is None:
@@ -705,7 +710,6 @@ class MainScreen(BoxLayout):
         popup.open()
 
     def _show_no_data_popup(self):
-        # 显示前几条错误
         err_text = "No valid data collected.\n"
         if self.error_summary:
             err_text += "\nRecent errors:\n" + "\n".join(self.error_summary[-5:])
@@ -736,7 +740,6 @@ class MainScreen(BoxLayout):
                     f"Stability: {stats['stability']:.1f}%   Years: {stats['years']}")
             info_label = Label(text=info, size_hint_y=None, height=20, font_size='11sp')
             self.chart_box.add_widget(info_label)
-        # 调整高度
         total_height = sum(child.height for child in self.chart_box.children if hasattr(child, 'height'))
         total_height += 10 * len(self.chart_box.children)
         self.chart_box.height = max(total_height, 100)
