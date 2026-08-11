@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Android Solar Radiation Collector (Kivy Version) - Fixed
+Android Solar Radiation Collector (Kivy Version) - Final Fix
 Last updated: 2026.08.11
 """
 
@@ -8,7 +8,7 @@ import os
 import sys
 import traceback
 import time
-import random
+import random   # 保留，虽然当前未使用，但可能用于未来扩展
 import threading
 import csv
 import tempfile
@@ -55,7 +55,7 @@ from kivy.clock import Clock, mainthread
 from kivy.utils import platform
 from kivy.core.text import LabelBase
 from kivy.config import Config
-from kivy.resources import resource_find   # <-- 新增
+from kivy.resources import resource_find   # <-- 保留备用，但未使用
 
 # ==============================================================
 
@@ -287,7 +287,7 @@ class LineChartWidget(Widget):
 
 # =============================================
 
-# -------- Login Screen (unchanged) --------
+# -------- Login Screen --------
 class LoginScreen(BoxLayout):
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', spacing=10, padding=20)
@@ -338,7 +338,7 @@ class LoginScreen(BoxLayout):
             except Exception as e:
                 self.status_label.text = f'❌ Connection error: {str(e)}'
 
-# -------- Main Screen (optimized) --------
+# -------- Main Screen (fixed) --------
 class MainScreen(BoxLayout):
     def __init__(self, app, **kwargs):
         try:
@@ -404,11 +404,11 @@ class MainScreen(BoxLayout):
             start_btn.bind(on_press=self.start_processing)
             self.add_widget(start_btn)
 
-            # Log output (FIXED: removed valign)
+            # Log output (FIXED: removed valign and text_size bind)
             log_box = BoxLayout(orientation='vertical', size_hint_y=None, height=250)
             log_box.add_widget(Label(text='Log Output:', size_hint_y=None, height=30))
-            self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left')  # <-- valign removed
-            self.log_text.bind(size=self.log_text.setter('text_size'))
+            self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left')
+            # NOTE: No bind(size=...) here; TextInput handles its own text wrapping.
             log_scroll = ScrollView()
             log_scroll.add_widget(self.log_text)
             log_box.add_widget(log_scroll)
@@ -444,7 +444,6 @@ class MainScreen(BoxLayout):
     def del_row(self, instance):
         children = self.table_grid.children
         if len(children) > 8:  # 4 headers + at least 1 data row
-            # children is reversed order, so the first item is the last added row
             for _ in range(4):
                 self.table_grid.remove_widget(children[0])
         else:
@@ -635,7 +634,8 @@ class MainScreen(BoxLayout):
                     })
         if not records:
             return
-        data_dir = get_app_data_dir()
+        # Use app.user_data_dir directly (more reliable)
+        data_dir = self.app.user_data_dir
         os.makedirs(data_dir, exist_ok=True)
         time_str = datetime.now().strftime("%m%d_%H%M")
         filename = f"solar_data_{time_str}.csv"
@@ -646,7 +646,6 @@ class MainScreen(BoxLayout):
                 writer.writeheader()
                 writer.writerows(records)
             self._update_log(f'✅ CSV exported: {filepath}')
-            # Show popup with share option on Android
             if platform == 'android':
                 self._share_file_android(filepath)
             else:
@@ -675,25 +674,22 @@ class MainScreen(BoxLayout):
         except Exception as e:
             self._update_log(f'Share failed: {e}')
 
-# -------- App Class (with improved font handling) --------
+# -------- App Class --------
 class SolarApp(App):
     def build(self):
         self._write_startup_log("App starting...")
 
         # ---------- 字体加载：遍历系统字体目录 ----------
-        import os
-
         # 常见的系统字体目录（Android）
         font_dirs = [
             '/system/fonts/',
             '/system/fonts/fallback/',
-            '/system/fonts/',
         ]
         # 常见中文字体文件名（按概率排序）
         font_files = [
-            'DroidSansFallback.ttf',        # 老设备
-            'NotoSansCJK-Regular.ttc',      # Android 8+
-            'NotoSansSC-Regular.otf',       # Android 10+ 简体中文
+            'DroidSansFallback.ttf',
+            'NotoSansCJK-Regular.ttc',
+            'NotoSansSC-Regular.otf',
             'NotoSansCJKsc-Regular.otf',
             'NotoSansCJK.ttc',
             'NotoSans-Regular.ttf',
