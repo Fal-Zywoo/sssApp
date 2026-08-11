@@ -680,19 +680,33 @@ class SolarApp(App):
     def build(self):
         self._write_startup_log("App starting...")
 
-        # ---------- 中文字体加载（使用 resource_find） ----------
-        font_path = resource_find('assets/fonts/NotoSansCJKsc-Regular.otf')
-        if font_path:
+        # ---------- 字体加载：优先使用系统字体 ----------
+        # 常见 Android 系统字体名称列表（按优先级排序）
+        system_fonts = [
+            'DroidSansFallback.ttf',        # 老设备
+            'NotoSansCJK-Regular.ttc',      # Android 8+
+            'NotoSansSC-Regular.otf',       # Android 10+ 简体中文
+            'NotoSansCJKsc-Regular.otf',    # 另一种命名
+        ]
+
+        font_loaded = False
+        for font_name in system_fonts:
             try:
-                LabelBase.register(name='Chinese', fn_regular=font_path)
-                Config.set('kivy', 'default_font', ['Chinese'])
-                self._write_startup_log(f"✅ Chinese font loaded from {font_path}")
+                # 尝试注册该字体
+                LabelBase.register(name='SystemFont', fn_regular=font_name)
+                # 设置为默认字体
+                Config.set('kivy', 'default_font', ['SystemFont'])
+                self._write_startup_log(f"✅ System font loaded: {font_name}")
+                font_loaded = True
+                break
             except Exception as e:
-                self._write_startup_log(f"Font registration error: {e}")
-        else:
-            self._write_startup_log("⚠️ Chinese font not found in assets, using system default")
-            # 可选的降级：尝试系统字体（不同设备名称可能不同）
-            # Config.set('kivy', 'default_font', ['DroidSansFallback', 'NotoSansCJK-Regular'])
+                # 如果失败，继续尝试下一个
+                self._write_startup_log(f"⚠️ Failed to load {font_name}: {e}")
+                continue
+
+        if not font_loaded:
+            self._write_startup_log("❌ All system fonts failed, using Kivy default")
+            # 保留 Kivy 默认字体（可能显示方框，但不会崩溃）
 
         # ---------- 权限请求 ----------
         if platform == 'android':
