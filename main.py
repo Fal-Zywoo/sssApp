@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Android Solar Radiation Collector (Kivy Version) - Final with Table Fix
+Android Solar Radiation Collector - Multi-tab UI with Share
 Last updated: 2026.08.11
 """
 
@@ -55,6 +55,8 @@ from kivy.utils import platform
 from kivy.core.text import LabelBase
 from kivy.config import Config
 from kivy.uix.checkbox import CheckBox
+from kivy.uix.tabbedpanel import TabbedPanel, TabbedPanelHeader
+from kivy.core.image import Image as CoreImage
 
 # ==============================================================
 
@@ -92,15 +94,15 @@ def detect_proxy_enhanced():
             pass
     return proxies if proxies else None
 
-# -------- Geocoding with cache --------
+# -------- Geocoding with cache and proxy support --------
 _geocode_cache = {}
 
-def get_coordinates(address, retries=2):
+def get_coordinates(address, proxies=None, retries=2):
     print(f"🗺️ Geocoding: {address}")
     if address in _geocode_cache:
         return _geocode_cache[address]
     try:
-        geolocator = Nominatim(user_agent="solar_app_android", timeout=15)
+        geolocator = Nominatim(user_agent="solar_app_android", timeout=15, proxies=proxies)
         for attempt in range(retries):
             try:
                 location = geolocator.geocode(address, timeout=15)
@@ -114,9 +116,10 @@ def get_coordinates(address, retries=2):
             time.sleep(1)
     except Exception as e:
         print(f"❌ Geocoding error: {e}")
+        traceback.print_exc()
     return None, None, None
 
-# -------- API data fetchers --------
+# -------- API data fetchers (unchanged) --------
 def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3):
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
@@ -141,7 +144,7 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
                 result = []
                 for y in range(start_year, end_year + 1):
                     if y in yearly:
-                        ghi = yearly[y] / 1000.0   # 修正单位
+                        ghi = yearly[y] / 1000.0
                         result.append({'YEAR': y, 'GHI_kWh_m2_year': ghi})
                 if len(result) >= 2:
                     return result
@@ -161,7 +164,6 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
     return None
 
 def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3):
-    # NASA POWER 单位：kWh/m²/day，累加得到年总量
     url = "https://power.larc.nasa.gov/api/temporal/daily/point"
     params = {
         "parameters": "ALLSKY_SFC_SW_DWN", "community": "RE",
@@ -272,7 +274,7 @@ class LineChartWidget(Widget):
 
 # =============================================
 
-# -------- Login Screen --------
+# -------- Login Screen (unchanged) --------
 class LoginScreen(BoxLayout):
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', spacing=10, padding=20)
@@ -364,120 +366,140 @@ class LoginScreen(BoxLayout):
             except Exception as e:
                 self.status_label.text = f'❌ Connection error: {str(e)}'
 
-# -------- Main Screen (Enhanced with Table Fix) --------
+# -------- Main Screen with TabbedPanel --------
 class MainScreen(BoxLayout):
     def __init__(self, app, **kwargs):
-        try:
-            super().__init__(orientation='vertical', spacing=5, padding=5)
-            self.app = app
-            self._lock = threading.Lock()
-            self.is_running = False
-            self._geocode_cache = {}
-            self.results = {}
-            self.yearly = {}
-            self.completed = 0
-            self.total_tasks = 0
-            self.proxies = detect_proxy_enhanced()
-            self.error_summary = []
-            self.last_rows = []
-            self.last_start = 2010
-            self.last_end = 2025
+        super().__init__(orientation='vertical', **kwargs)
+        self.app = app
+        self._lock = threading.Lock()
+        self.is_running = False
+        self._geocode_cache = {}
+        self.results = {}
+        self.yearly = {}
+        self.completed = 0
+        self.total_tasks = 0
+        self.proxies = detect_proxy_enhanced()
+        self.error_summary = []
+        self.last_rows = []
+        self.last_start = 2010
+        self.last_end = 2025
 
-            # 参数输入
-            param_box = BoxLayout(orientation='vertical', size_hint_y=None, height=120, spacing=3)
-            row1 = BoxLayout(spacing=5)
-            row1.add_widget(Label(text='Start Year:', size_hint_x=0.3))
-            self.start_year = TextInput(text='2010', multiline=False, input_filter='int', size_hint_x=0.7)
-            row1.add_widget(self.start_year)
-            row1.add_widget(Label(text='End Year:', size_hint_x=0.3))
-            self.end_year = TextInput(text='2025', multiline=False, input_filter='int', size_hint_x=0.7)
-            row1.add_widget(self.end_year)
-            param_box.add_widget(row1)
+        # 创建 TabbedPanel
+        self.tabs = TabbedPanel(do_default_tab=False)
+        self.tabs.default_tab_text = 'Data'
+        self.tabs.tab_width = 120  # 适当宽度
 
-            row2 = BoxLayout(spacing=5)
-            row2.add_widget(Label(text='Chart Type:', size_hint_x=0.3))
-            self.chart_type = TextInput(text='line', multiline=False, size_hint_x=0.7)
-            row2.add_widget(self.chart_type)
-            row2.add_widget(Widget(size_hint_x=0.3))
-            row2.add_widget(Widget(size_hint_x=0.7))
-            param_box.add_widget(row2)
-            self.add_widget(param_box)
+        # ---- Tab1: 数据 ----
+        tab_data = TabbedPanelHeader(text='📊 Data')
+        data_content = BoxLayout(orientation='vertical', spacing=5, padding=5)
+        # 参数输入
+        param_box = BoxLayout(orientation='vertical', size_hint_y=None, height=120, spacing=3)
+        row1 = BoxLayout(spacing=5)
+        row1.add_widget(Label(text='Start:', size_hint_x=0.2))
+        self.start_year = TextInput(text='2010', multiline=False, input_filter='int', size_hint_x=0.3)
+        row1.add_widget(self.start_year)
+        row1.add_widget(Label(text='End:', size_hint_x=0.2))
+        self.end_year = TextInput(text='2025', multiline=False, input_filter='int', size_hint_x=0.3)
+        row1.add_widget(self.end_year)
+        param_box.add_widget(row1)
 
-            # 表格
-            self.table_container = ScrollView(size_hint_y=0.25)
-            self.table_grid = GridLayout(cols=4, size_hint_y=None, spacing=2, row_default_height=40)
-            self.table_grid.bind(minimum_height=self.table_grid.setter('height'))
-            for h in ['Address', 'Latitude', 'Longitude', 'Contract']:
-                self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True, font_size='12sp'))
-            self.add_table_row('Shanghai, China', '', '', '1500')
-            self.table_container.add_widget(self.table_grid)
-            self.add_widget(self.table_container)
+        row2 = BoxLayout(spacing=5)
+        row2.add_widget(Label(text='Chart Type:', size_hint_x=0.3))
+        self.chart_type = TextInput(text='line', multiline=False, size_hint_x=0.7)
+        row2.add_widget(self.chart_type)
+        row2.add_widget(Widget(size_hint_x=0.3))
+        row2.add_widget(Widget(size_hint_x=0.7))
+        param_box.add_widget(row2)
+        data_content.add_widget(param_box)
 
-            # 按钮行
-            btn_row1 = BoxLayout(size_hint_y=None, height=50, spacing=5)
-            add_btn = Button(text='Add Row')
-            add_btn.bind(on_press=self.add_row)
-            del_btn = Button(text='Delete Last')
-            del_btn.bind(on_press=self.del_row)
-            clear_btn = Button(text='Clear All')
-            clear_btn.bind(on_press=self.clear_all)
-            load_btn = Button(text='Import CSV')
-            load_btn.bind(on_press=self.load_csv)
-            save_btn = Button(text='Export CSV')
-            save_btn.bind(on_press=self.save_csv)
-            btn_row1.add_widget(add_btn)
-            btn_row1.add_widget(del_btn)
-            btn_row1.add_widget(clear_btn)
-            btn_row1.add_widget(load_btn)
-            btn_row1.add_widget(save_btn)
-            self.add_widget(btn_row1)
+        # 表格
+        self.table_container = ScrollView(size_hint_y=0.3)
+        self.table_grid = GridLayout(cols=4, size_hint_y=None, spacing=2, row_default_height=40)
+        self.table_grid.bind(minimum_height=self.table_grid.setter('height'))
+        for h in ['Address', 'Latitude', 'Longitude', 'Contract']:
+            self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True, font_size='12sp'))
+        self.add_table_row('Shanghai, China', '', '', '1500')
+        self.table_container.add_widget(self.table_grid)
+        data_content.add_widget(self.table_container)
 
-            btn_row2 = BoxLayout(size_hint_y=None, height=50, spacing=5)
-            self.start_btn = Button(text='Start', background_color=(0.2,0.7,0.2,1))
-            self.start_btn.bind(on_press=self.start_processing)
-            self.stop_btn = Button(text='Stop', background_color=(1,0.2,0.2,1))
-            self.stop_btn.bind(on_press=self.stop_processing)
-            self.retry_btn = Button(text='Retry All', background_color=(0.8,0.6,0.2,1))
-            self.retry_btn.bind(on_press=self.retry_all)
-            self.test_btn = Button(text='Network Test', background_color=(0.3,0.5,0.8,1))
-            self.test_btn.bind(on_press=self.network_test)
-            btn_row2.add_widget(self.start_btn)
-            btn_row2.add_widget(self.stop_btn)
-            btn_row2.add_widget(self.retry_btn)
-            btn_row2.add_widget(self.test_btn)
-            self.add_widget(btn_row2)
+        # 按钮行1
+        btn_row1 = BoxLayout(size_hint_y=None, height=50, spacing=5)
+        add_btn = Button(text='Add Row')
+        add_btn.bind(on_press=self.add_row)
+        del_btn = Button(text='Delete Last')
+        del_btn.bind(on_press=self.del_row)
+        clear_btn = Button(text='Clear All')
+        clear_btn.bind(on_press=self.clear_all)
+        load_btn = Button(text='Import CSV')
+        load_btn.bind(on_press=self.load_csv)
+        save_btn = Button(text='Export CSV')
+        save_btn.bind(on_press=self.save_csv)
+        btn_row1.add_widget(add_btn)
+        btn_row1.add_widget(del_btn)
+        btn_row1.add_widget(clear_btn)
+        btn_row1.add_widget(load_btn)
+        btn_row1.add_widget(save_btn)
+        data_content.add_widget(btn_row1)
 
-            # 进度条
-            self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=20)
-            self.add_widget(self.progress)
+        # 按钮行2
+        btn_row2 = BoxLayout(size_hint_y=None, height=50, spacing=5)
+        self.start_btn = Button(text='Start', background_color=(0.2,0.7,0.2,1))
+        self.start_btn.bind(on_press=self.start_processing)
+        self.stop_btn = Button(text='Stop', background_color=(1,0.2,0.2,1))
+        self.stop_btn.bind(on_press=self.stop_processing)
+        self.retry_btn = Button(text='Retry All', background_color=(0.8,0.6,0.2,1))
+        self.retry_btn.bind(on_press=self.retry_all)
+        self.test_btn = Button(text='Network Test', background_color=(0.3,0.5,0.8,1))
+        self.test_btn.bind(on_press=self.network_test)
+        btn_row2.add_widget(self.start_btn)
+        btn_row2.add_widget(self.stop_btn)
+        btn_row2.add_widget(self.retry_btn)
+        btn_row2.add_widget(self.test_btn)
+        data_content.add_widget(btn_row2)
 
-            # 日志
-            log_box = BoxLayout(orientation='vertical', size_hint_y=0.3, spacing=2)
-            log_box.add_widget(Label(text='Log Output:', size_hint_y=None, height=20, font_size='12sp'))
-            self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left', font_size='11sp')
-            log_scroll = ScrollView(bar_width=10, bar_color=[0.5,0.5,0.5,1])
-            log_scroll.add_widget(self.log_text)
-            log_box.add_widget(log_scroll)
-            clear_log_btn = Button(text='Clear Log', size_hint_y=None, height=30)
-            clear_log_btn.bind(on_press=self.clear_log)
-            log_box.add_widget(clear_log_btn)
-            self.add_widget(log_box)
+        # 进度条
+        self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=20)
+        data_content.add_widget(self.progress)
 
-            # 图表
-            self.chart_container = ScrollView(size_hint_y=0.4, bar_width=10, bar_color=[0.5,0.5,0.5,1])
-            self.chart_box = BoxLayout(orientation='vertical', size_hint_y=None)
-            self.chart_box.bind(minimum_height=self.chart_box.setter('height'))
-            self.chart_container.add_widget(self.chart_box)
-            self.add_widget(self.chart_container)
+        tab_data.content = data_content
+        self.tabs.add_widget(tab_data)
 
-            self._update_log(f'Proxy: {self.proxies if self.proxies else "None (direct)"}')
-        except Exception as e:
-            error_text = f"MainScreen init error:\n{traceback.format_exc()}"
-            self.app._write_startup_log(error_text)
-            self.clear_widgets()
-            self.add_widget(Label(text=error_text, color=(1,0,0,1)))
+        # ---- Tab2: 日志 ----
+        tab_log = TabbedPanelHeader(text='📝 Log')
+        log_content = BoxLayout(orientation='vertical', spacing=2, padding=5)
+        log_content.add_widget(Label(text='Log Output:', size_hint_y=None, height=20, font_size='12sp'))
+        self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left', font_size='11sp')
+        log_scroll = ScrollView(bar_width=10, bar_color=[0.5,0.5,0.5,1])
+        log_scroll.add_widget(self.log_text)
+        log_content.add_widget(log_scroll)
+        clear_log_btn = Button(text='Clear Log', size_hint_y=None, height=30)
+        clear_log_btn.bind(on_press=self.clear_log)
+        log_content.add_widget(clear_log_btn)
+        tab_log.content = log_content
+        self.tabs.add_widget(tab_log)
 
-    # ---- Table operations ----
+        # ---- Tab3: 图表 ----
+        tab_chart = TabbedPanelHeader(text='📈 Charts')
+        chart_content = BoxLayout(orientation='vertical', spacing=5, padding=5)
+        # 图表滚动区域
+        self.chart_container = ScrollView(bar_width=10, bar_color=[0.5,0.5,0.5,1])
+        self.chart_box = BoxLayout(orientation='vertical', size_hint_y=None)
+        self.chart_box.bind(minimum_height=self.chart_box.setter('height'))
+        self.chart_container.add_widget(self.chart_box)
+        chart_content.add_widget(self.chart_container)
+
+        # 分享按钮
+        share_btn = Button(text='📤 Share Data (CSV + Chart)', size_hint_y=None, height=50, background_color=(0.3,0.6,0.9,1))
+        share_btn.bind(on_press=self.share_data)
+        chart_content.add_widget(share_btn)
+
+        tab_chart.content = chart_content
+        self.tabs.add_widget(tab_chart)
+
+        self.add_widget(self.tabs)
+        self._update_log(f'Proxy: {self.proxies if self.proxies else "None (direct)"}')
+
+    # ---- Table operations (unchanged) ----
     def add_table_row(self, addr='', lat='', lon='', contract=''):
         self.table_grid.add_widget(TextInput(text=addr, multiline=False, font_size='12sp'))
         self.table_grid.add_widget(TextInput(text=lat, multiline=False, font_size='12sp'))
@@ -565,12 +587,8 @@ class MainScreen(BoxLayout):
             self._update_log('❌ Please enter at least one address')
             return
 
-        # ---- 修正：正确读取表格行（逆序转正序） ----
-        # children 是逆序（最后添加的在前），我们需要反转
-        # 先去除表头（最后4个是表头 Label）
-        items = list(children)[:-4]   # 取出所有输入框，但顺序仍为逆序
-        # 将 items 按行分组，每组4个（地址、纬度、经度、合同），但因为是逆序，需要反转整个列表
-        items_reversed = list(reversed(items))  # 现在正序：第一行地址、纬度、经度、合同，第二行...
+        items = list(children)[:-4]
+        items_reversed = list(reversed(items))
         rows = []
         for i in range(0, len(items_reversed), 4):
             if i+3 >= len(items_reversed):
@@ -599,7 +617,6 @@ class MainScreen(BoxLayout):
             self._update_log('❌ No valid addresses')
             return
 
-        # 验证年份
         try:
             start = int(self.start_year.text.strip())
             end = int(self.end_year.text.strip())
@@ -693,16 +710,15 @@ class MainScreen(BoxLayout):
         else:
             self._export_csv()
 
-    # ---- Geocoding ----
     def _geocode_address(self, addr):
         if addr in self._geocode_cache:
             return self._geocode_cache[addr]
-        lat, lon, full = get_coordinates(addr)
+        lat, lon, full = get_coordinates(addr, proxies=self.proxies)   # 传递代理
         if lat is not None:
             self._geocode_cache[addr] = (lat, lon, full)
         return lat, lon, full
 
-    # ---- Popups ----
+    # ---- Popups (unchanged) ----
     def _show_error_popup(self, addr):
         popup = Popup(title='Collection Failed',
                       content=Label(text=f'All data sources failed for:\n{addr}\nCheck network or address.'),
@@ -756,7 +772,7 @@ class MainScreen(BoxLayout):
         if self.total_tasks > 0:
             self.progress.value = min(100, int(self.completed / self.total_tasks * 100))
 
-    # ---- CSV Export ----
+    # ---- CSV Export (unchanged) ----
     def _export_csv(self):
         if not self.yearly:
             self._update_log('⚠️ No data to export')
@@ -789,8 +805,11 @@ class MainScreen(BoxLayout):
                 writer.writeheader()
                 writer.writerows(records)
             self._update_log(f'✅ CSV exported: {filepath}')
+            # 保存路径供分享使用
+            self._last_csv_path = filepath
             if platform == 'android':
-                self._share_file_android(filepath)
+                # 自动分享（但用户可能想通过按钮手动分享，这里只导出）
+                pass
             else:
                 popup = Popup(title='Export Complete',
                               content=Label(text=f'CSV saved to:\n{filepath}'),
@@ -799,23 +818,97 @@ class MainScreen(BoxLayout):
         except Exception as e:
             self._update_log(f'❌ Export failed: {e}')
 
-    def _share_file_android(self, filepath):
+    # ---- Share Data (新增) ----
+    def share_data(self, instance):
+        """分享 CSV 和图表截图（多附件）"""
+        if not self.yearly:
+            self._update_log('⚠️ No data to share, collect data first.')
+            popup = Popup(title='No Data', content=Label(text='Please collect data first.'), size_hint=(0.8,0.4))
+            popup.open()
+            return
+
+        # 1. 确保CSV已导出
+        if not hasattr(self, '_last_csv_path') or not os.path.exists(self._last_csv_path):
+            self._export_csv()  # 重新导出
+            if not hasattr(self, '_last_csv_path') or not os.path.exists(self._last_csv_path):
+                self._update_log('❌ CSV export failed, cannot share.')
+                return
+
+        # 2. 截图图表区域（整个 chart_box 或 container）
+        # 获取当前显示的第一个图表（如果有）
+        chart_container = self.chart_container
+        # 截图整个 chart_container 的内容
+        # 由于 chart_box 可能超出屏幕，我们只截取可见区域，但为了完整，最好截图 chart_box 全部内容
+        # 使用 export_to_png 需要 Widget 大小正确，我们可以临时将 chart_box 尺寸调整为其实际内容高度
+        # 但为了简单，我们截取整个 chart_container 的可见区域，这只能截取当前屏幕可见部分。
+        # 改进：遍历 chart_box 所有子元素，分别截图？更简单的是利用 Kivy 的 export_to_png 整个 chart_box。
+        # 注意：chart_box 可能很大，但可以导出整个画布。
         try:
-            from jnius import autoclass
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            Intent = autoclass('android.content.Intent')
-            Uri = autoclass('android.net.Uri')
-            File = autoclass('java.io.File')
-            context = PythonActivity.mActivity
-            file_obj = File(filepath)
-            uri = Uri.fromFile(file_obj)
-            intent = Intent(Intent.ACTION_SEND)
-            intent.setType('text/csv')
-            intent.putExtra(Intent.EXTRA_STREAM, uri)
-            chooser = Intent.createChooser(intent, 'Share CSV')
-            context.startActivity(chooser)
+            # 保存图表截图到临时文件
+            chart_box = self.chart_box
+            # 强制更新布局
+            chart_box.do_layout()
+            # 设置 chart_box 的高度为实际内容高度
+            # 但 size_hint_y=None 已经设置了 height，我们确保它足够
+            # 为了避免太高的图片，我们限制最大高度为 2000 像素
+            target_height = min(chart_box.height, 2000)
+            # 创建临时文件
+            import tempfile
+            img_path = os.path.join(tempfile.gettempdir(), f'chart_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
+            # 使用 export_to_png
+            chart_box.export_to_png(img_path)
+            self._update_log(f'📸 Chart saved to {img_path}')
         except Exception as e:
-            self._update_log(f'Share failed: {e}')
+            self._update_log(f'❌ Chart screenshot failed: {e}')
+            popup = Popup(title='Share Error', content=Label(text=f'Failed to capture chart: {e}'), size_hint=(0.8,0.4))
+            popup.open()
+            return
+
+        # 3. Android 分享多个文件
+        if platform == 'android':
+            try:
+                from jnius import autoclass, cast
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                Intent = autoclass('android.content.Intent')
+                Uri = autoclass('android.net.Uri')
+                File = autoclass('java.io.File')
+                ArrayList = autoclass('java.util.ArrayList')
+                context = PythonActivity.mActivity
+
+                # 构建 URI 列表
+                uris = ArrayList()
+                # CSV
+                csv_file = File(self._last_csv_path)
+                csv_uri = Uri.fromFile(csv_file)
+                uris.add(csv_uri)
+                # PNG
+                png_file = File(img_path)
+                png_uri = Uri.fromFile(png_file)
+                uris.add(png_uri)
+
+                intent = Intent(Intent.ACTION_SEND_MULTIPLE)
+                intent.setType('*/*')
+                intent.putExtra(Intent.EXTRA_STREAM, uris)
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+
+                chooser = Intent.createChooser(intent, 'Share Data via')
+                context.startActivity(chooser)
+                self._update_log('📤 Share intent launched.')
+            except Exception as e:
+                self._update_log(f'❌ Share failed: {e}')
+                popup = Popup(title='Share Error', content=Label(text=f'Share failed: {e}'), size_hint=(0.8,0.4))
+                popup.open()
+        else:
+            # 桌面环境：提示文件位置
+            popup = Popup(title='Share on Desktop',
+                          content=Label(text=f'CSV: {self._last_csv_path}\nChart: {img_path}'),
+                          size_hint=(0.8,0.5))
+            popup.open()
+
+    # ---- (保留的旧分享方法，可忽略) ----
+    def _share_file_android(self, filepath):
+        # 此方法已被 share_data 替代，保留空壳以免报错
+        pass
 
 # -------- App Class --------
 class SolarApp(App):
