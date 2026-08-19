@@ -7,7 +7,7 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf
 source.exclude_exts = spec
 source.exclude_dirs = tests, bin, venv, __pycache__, .git
 version = 1.0.0
-requirements = python3,kivy,requests,geopy,setuptools
+requirements = python3,kivy,requests==2.31.0,geopy,setuptools,charset_normalizer==3.1.0
 orientation = portrait
 fullscreen = 0
 android.permissions = INTERNET, ACCESS_NETWORK_STATE, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE
