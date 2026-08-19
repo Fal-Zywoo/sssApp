@@ -4,6 +4,7 @@ Android Solar Radiation Collector - SSL Adapter Fix (Tabbed UI)
 Last updated: 2026.08.19
 """
 
+import requests
 import os
 import sys
 import traceback
@@ -17,6 +18,7 @@ import configparser
 import warnings
 import ssl
 import urllib3
+from geopy.geocoders import Nominatim
 
 # 禁用 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
