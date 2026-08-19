@@ -77,41 +77,27 @@ jobs:
         if: steps.cache-buildozer.outputs.cache-hit != 'true' || inputs.clean_cache == true
         run: rm -rf .buildozer/android/platform/build-*
 
-      # ----- 核心构建步骤（包含 SDK 自动安装和软链接修复） -----
+      # ----- 核心构建步骤（含完整 SDK 安装） -----
       - name: Build APK with verbose logging
         id: build
         run: |
-          # ---- 1. 调试：显示当前目录和所有文件 ----
-          echo "=== 当前工作目录 ==="
-          pwd
-          echo "=== 文件列表 ==="
-          ls -la
-          echo "=== 查找 buildozer.spec ==="
-          find . -name "buildozer.spec*"
-
-          # ---- 2. 如果当前目录没有 buildozer.spec，尝试从其他位置复制 ----
+          # ---- 1. 确保 buildozer.spec 存在 ----
           if [ ! -f buildozer.spec ]; then
-            echo "⚠️ 当前目录没有 buildozer.spec，尝试从仓库根目录查找..."
             SPEC_PATH=$(find $GITHUB_WORKSPACE -name "buildozer.spec" -type f | head -1)
             if [ -n "$SPEC_PATH" ]; then
-              echo "✅ 找到 spec 文件：$SPEC_PATH"
               cp "$SPEC_PATH" ./buildozer.spec
             else
-              echo "❌ 错误：找不到任何 buildozer.spec 文件，退出"
+              echo "❌ 找不到 buildozer.spec"
               exit 1
             fi
-          else
-            echo "✅ buildozer.spec 已存在于当前目录"
           fi
 
-          # ---- 3. 强制设置 Android SDK 路径 ----
+          # ---- 2. 设置 Android SDK 路径 ----
           export ANDROID_HOME="$HOME/.buildozer/android/platform/android-sdk"
           export ANDROID_SDK_ROOT="$ANDROID_HOME"
-          # 清除系统级的 Android 环境变量
-          unset ANDROID_NDK ANDROID_NDK_HOME ANDROID_NDK_ROOT
           mkdir -p "$ANDROID_HOME"
 
-          # ---- 4. 安装 command-line tools（如果缺失） ----
+          # ---- 3. 下载并安装 command-line tools（如果尚未存在） ----
           if [ ! -d "$ANDROID_HOME/cmdline-tools/latest" ]; then
             echo "⬇️ 下载 command-line tools..."
             mkdir -p "$ANDROID_HOME/cmdline-tools"
@@ -120,31 +106,36 @@ jobs:
             unzip -q cmdline-tools.zip
             mv cmdline-tools latest
             export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
-            # 接受所有许可证（静默）
+            # 接受许可证
             yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses > /dev/null 2>&1 || true
-            # 安装 API 31 和 build-tools 31.0.0
-            sdkmanager --sdk_root="$ANDROID_HOME" "platforms;android-31" "build-tools;31.0.0"
-            echo "✅ API 31 安装完成"
+            # 安装必要的组件
+            sdkmanager --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-31" "build-tools;31.0.0"
+            echo "✅ SDK 组件安装完成"
           else
             echo "✅ command-line tools 已存在"
           fi
 
-          # ---- 5. 创建软链接以兼容 Buildozer 的默认查找路径 ----
-          mkdir -p "$ANDROID_HOME/tools/bin"
-          ln -sf "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$ANDROID_HOME/tools/bin/sdkmanager"
-          ln -sf "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" "$ANDROID_HOME/tools/bin/avdmanager"
-          echo "✅ SDK 工具链接创建完成"
+          # ---- 4. 将 cmdline-tools 复制到 tools 目录（解决 Buildozer 查找路径） ----
+          mkdir -p "$ANDROID_HOME/tools"
+          cp -r "$ANDROID_HOME/cmdline-tools/latest/." "$ANDROID_HOME/tools/"
+          # 验证 sdkmanager 是否可用
+          if [ -f "$ANDROID_HOME/tools/bin/sdkmanager" ]; then
+            echo "✅ sdkmanager 已就绪: $ANDROID_HOME/tools/bin/sdkmanager"
+          else
+            echo "❌ sdkmanager 未找到！"
+            exit 1
+          fi
 
-          # ---- 6. 回到工作目录（确保在仓库根目录） ----
+          # ---- 5. 回到工作目录 ----
           cd $GITHUB_WORKSPACE
 
-          # ---- 7. 执行构建（默认读取当前目录的 buildozer.spec） ----
+          # ---- 6. 执行构建 ----
           BUILD_CMD="buildozer -v android ${{ inputs.build_type }}"
           echo "🔨 执行命令: $BUILD_CMD"
           $BUILD_CMD 2>&1 | tee build.log
           EXIT_CODE=${PIPESTATUS[0]}
 
-          # ---- 8. 处理构建结果 ----
+          # ---- 7. 处理结果 ----
           if [ $EXIT_CODE -ne 0 ]; then
             echo "=== ❌ 构建失败 (退出码: $EXIT_CODE) ==="
             echo "=== 📄 日志最后 500 行 ==="
