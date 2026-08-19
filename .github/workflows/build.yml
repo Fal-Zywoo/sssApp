@@ -77,7 +77,7 @@ jobs:
         if: steps.cache-buildozer.outputs.cache-hit != 'true' || inputs.clean_cache == true
         run: rm -rf .buildozer/android/platform/build-*
 
-      # ----- 核心构建步骤（含调试和自动修复）-----
+      # ----- 核心构建步骤（包含 SDK 自动安装和软链接修复） -----
       - name: Build APK with verbose logging
         id: build
         run: |
@@ -104,16 +104,16 @@ jobs:
             echo "✅ buildozer.spec 已存在于当前目录"
           fi
 
-          # ---- 3. 强制设置 Android SDK 路径（使用 Buildozer 默认路径） ----
+          # ---- 3. 强制设置 Android SDK 路径 ----
           export ANDROID_HOME="$HOME/.buildozer/android/platform/android-sdk"
           export ANDROID_SDK_ROOT="$ANDROID_HOME"
           # 清除系统级的 Android 环境变量
           unset ANDROID_NDK ANDROID_NDK_HOME ANDROID_NDK_ROOT
           mkdir -p "$ANDROID_HOME"
 
-          # ---- 4. 检查并安装 API 31（如果缺失） ----
-          if [ ! -d "$ANDROID_HOME/platforms/android-31" ]; then
-            echo "⚠️ API 31 未找到，开始安装（可能需要几分钟）..."
+          # ---- 4. 安装 command-line tools（如果缺失） ----
+          if [ ! -d "$ANDROID_HOME/cmdline-tools/latest" ]; then
+            echo "⬇️ 下载 command-line tools..."
             mkdir -p "$ANDROID_HOME/cmdline-tools"
             cd "$ANDROID_HOME/cmdline-tools"
             wget -q --show-progress https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
@@ -126,19 +126,25 @@ jobs:
             sdkmanager --sdk_root="$ANDROID_HOME" "platforms;android-31" "build-tools;31.0.0"
             echo "✅ API 31 安装完成"
           else
-            echo "✅ API 31 已存在，跳过安装"
+            echo "✅ command-line tools 已存在"
           fi
 
-          # ---- 5. 回到工作目录（确保在仓库根目录） ----
+          # ---- 5. 创建软链接以兼容 Buildozer 的默认查找路径 ----
+          mkdir -p "$ANDROID_HOME/tools/bin"
+          ln -sf "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$ANDROID_HOME/tools/bin/sdkmanager"
+          ln -sf "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" "$ANDROID_HOME/tools/bin/avdmanager"
+          echo "✅ SDK 工具链接创建完成"
+
+          # ---- 6. 回到工作目录（确保在仓库根目录） ----
           cd $GITHUB_WORKSPACE
 
-          # ---- 6. 执行构建（默认读取当前目录的 buildozer.spec） ----
+          # ---- 7. 执行构建（默认读取当前目录的 buildozer.spec） ----
           BUILD_CMD="buildozer -v android ${{ inputs.build_type }}"
           echo "🔨 执行命令: $BUILD_CMD"
           $BUILD_CMD 2>&1 | tee build.log
           EXIT_CODE=${PIPESTATUS[0]}
 
-          # ---- 7. 处理构建结果 ----
+          # ---- 8. 处理构建结果 ----
           if [ $EXIT_CODE -ne 0 ]; then
             echo "=== ❌ 构建失败 (退出码: $EXIT_CODE) ==="
             echo "=== 📄 日志最后 500 行 ==="
