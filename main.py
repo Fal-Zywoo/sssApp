@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Android Solar Radiation Collector - SSL & Network Enhanced (Tabbed UI)
+Android Solar Radiation Collector - SSL Adapter Fix (Tabbed UI)
 Last updated: 2026.08.19
 """
 
@@ -18,17 +18,15 @@ import warnings
 import ssl
 import urllib3
 
-# 禁用 SSL 警告（仅针对证书验证失败）
+# 禁用 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ---- 自定义 SSL 上下文（解决 TLS 兼容性问题） ----
+# ---- 自定义 SSL 上下文（宽松 TLS 版本） ----
 def create_ssl_context():
     """
     创建兼容性更好的 SSL 上下文，允许 TLSv1.0+ 和常见加密套件。
-    Android 5.0+ 通常支持 TLSv1.2，但某些服务器可能使用较旧的协议。
     """
     try:
-        # 尝试创建允许 TLSv1.0 及以上的上下文
         context = ssl.create_default_context()
         # 允许 TLSv1.0, TLSv1.1, TLSv1.2
         context.minimum_version = ssl.TLSVersion.TLSv1
@@ -39,17 +37,32 @@ def create_ssl_context():
         # 旧版 Python 没有 TLSVersion，直接创建不验证的上下文
         return ssl._create_unverified_context()
 
-# 创建全局 SSL 上下文（用于 requests）
-CUSTOM_SSL_CONTEXT = create_ssl_context()
+# ---- 自定义 HTTPAdapter，用于注入 SSL 上下文 ----
+class CustomHTTPAdapter(requests.adapters.HTTPAdapter):
+    def __init__(self, ssl_context=None, *args, **kwargs):
+        self.ssl_context = ssl_context or create_ssl_context()
+        super().__init__(*args, **kwargs)
 
-# ---- 全局 requests Session（带自定义 SSL 上下文） ----
-def get_requests_session(proxies=None, timeout=30):
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs['ssl_context'] = self.ssl_context
+        return super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, *args, **kwargs):
+        kwargs['ssl_context'] = self.ssl_context
+        return super().proxy_manager_for(*args, **kwargs)
+
+# ---- 全局 requests Session（带自定义适配器） ----
+def get_requests_session(proxies=None):
     """
-    返回配置好的 requests Session，使用自定义 SSL 上下文，并设置重试。
+    返回配置好的 requests Session，使用自定义 SSL 适配器，并设置重试。
     """
     session = requests.Session()
-    # 使用自定义 SSL 上下文（而非 verify=False）
-    session.verify = CUSTOM_SSL_CONTEXT
+    # 使用自定义适配器（注入 SSL 上下文）
+    adapter = CustomHTTPAdapter()
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)  # 也挂载 http（虽然不影响）
+    # 设置验证为 False（避免证书验证，但由上下文控制 TLS 版本）
+    session.verify = False
     # 设置默认 User-Agent
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36'
@@ -57,8 +70,13 @@ def get_requests_session(proxies=None, timeout=30):
     # 添加重试策略
     retry = urllib3.Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
     adapter = requests.adapters.HTTPAdapter(max_retries=retry)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
+    # 注意：这里重新创建了一个 adapter，但不会覆盖上面的 custom adapter，
+    # 因为 mount 是覆盖的，我们只需保证 custom adapter 有重试属性即可。
+    # 更好的做法是让 custom adapter 也支持重试。
+    # 简单处理：直接使用 custom adapter 并设置 max_retries
+    custom_adapter = CustomHTTPAdapter(max_retries=retry)
+    session.mount('https://', custom_adapter)
+    session.mount('http://', custom_adapter)
     if proxies:
         session.proxies.update(proxies)
     return session
@@ -204,7 +222,6 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
     session = get_requests_session(proxies)
     for attempt in range(retries):
         try:
-            # 直接使用 session.get，自动应用自定义 SSL 上下文
             resp = session.get(url, params=params, timeout=30)
             if resp.status_code == 200:
                 data = resp.json()
@@ -221,7 +238,7 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
                 result = []
                 for y in range(start_year, end_year + 1):
                     if y in yearly:
-                        ghi_kwh = yearly[y] / 3.6  # 除以3.6
+                        ghi_kwh = yearly[y] / 3.6
                         result.append({'YEAR': y, 'GHI_kWh_m2_year': ghi_kwh})
                 if result:
                     return result
@@ -575,7 +592,7 @@ class MainScreen(BoxLayout):
 
         self.add_widget(self.tabs)
         self._update_log(f'Proxy env set: {self.proxies if self.proxies else "None"}')
-        self._update_log('SSL context: TLSv1+ with relaxed ciphers (for compatibility)')
+        self._update_log('SSL context: injected via custom HTTPAdapter (TLSv1+)')
 
     # ---- Table operations (unchanged) ----
     def add_table_row(self, addr='', lat='', lon='', contract=''):
@@ -632,7 +649,7 @@ class MainScreen(BoxLayout):
         self._start_processing_from_rows(self.last_rows, self.last_start, self.last_end)
 
     def network_test(self, instance):
-        self._update_log('🌐 Starting network test (using custom SSL context)...')
+        self._update_log('🌐 Starting network test (using custom SSL adapter)...')
         def test():
             # 使用自定义 session
             session = get_requests_session(self.proxies)
@@ -648,7 +665,6 @@ class MainScreen(BoxLayout):
             ]
             for name, url, params in endpoints:
                 try:
-                    # 使用 session.get（自动应用 SSL 上下文）
                     headers = {'User-Agent': 'Mozilla/5.0'} if 'nominatim' not in url else {'User-Agent':'solar_app'}
                     resp = session.get(url, params=params, timeout=15, headers=headers)
                     if resp.status_code == 200:
