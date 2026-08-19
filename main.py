@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Android Solar Radiation Collector - SSL Fix for Nominatim & Open-Meteo unit fix
-Last updated: 2026.08.11
+Android Solar Radiation Collector - SSL & Network Enhanced (Tabbed UI)
+Last updated: 2026.08.19
 """
 
 import os
@@ -15,12 +15,64 @@ import urllib.request
 from datetime import datetime
 import configparser
 import warnings
+import ssl
 import urllib3
 
 # 禁用 SSL 警告（仅针对证书验证失败）
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ---- Global exception handler ----
+# ---- 自定义 SSL 上下文（解决 TLS 兼容性问题） ----
+def create_ssl_context():
+    """
+    创建兼容性更好的 SSL 上下文，允许 TLSv1.0+ 和常见加密套件。
+    Android 5.0+ 通常支持 TLSv1.2，但某些服务器可能使用较旧的协议。
+    """
+    try:
+        # 尝试创建允许 TLSv1.0 及以上的上下文
+        context = ssl.create_default_context()
+        # 允许 TLSv1.0, TLSv1.1, TLSv1.2
+        context.minimum_version = ssl.TLSVersion.TLSv1
+        # 放宽加密套件限制（允许一些低安全性但广泛使用的套件）
+        context.set_ciphers('DEFAULT@SECLEVEL=1')
+        return context
+    except AttributeError:
+        # 旧版 Python 没有 TLSVersion，直接创建不验证的上下文
+        return ssl._create_unverified_context()
+
+# 创建全局 SSL 上下文（用于 requests）
+CUSTOM_SSL_CONTEXT = create_ssl_context()
+
+# ---- 全局 requests Session（带自定义 SSL 上下文） ----
+def get_requests_session(proxies=None, timeout=30):
+    """
+    返回配置好的 requests Session，使用自定义 SSL 上下文，并设置重试。
+    """
+    session = requests.Session()
+    # 使用自定义 SSL 上下文（而非 verify=False）
+    session.verify = CUSTOM_SSL_CONTEXT
+    # 设置默认 User-Agent
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36'
+    })
+    # 添加重试策略
+    retry = urllib3.Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+    adapter = requests.adapters.HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    if proxies:
+        session.proxies.update(proxies)
+    return session
+
+# ---- 为了兼容现有代码，保留一个全局 session 实例 ----
+_DEFAULT_SESSION = None
+
+def get_default_session():
+    global _DEFAULT_SESSION
+    if _DEFAULT_SESSION is None:
+        _DEFAULT_SESSION = get_requests_session()
+    return _DEFAULT_SESSION
+
+# ---- 全局异常处理 ----
 def global_exception_handler(exc_type, exc_value, exc_tb):
     error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
     try:
@@ -43,7 +95,6 @@ sys.excepthook = global_exception_handler
 
 import requests
 from geopy.geocoders import Nominatim
-
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
@@ -115,9 +166,11 @@ def get_coordinates(address, proxies=None, retries=2):
     if address in _geocode_cache:
         return _geocode_cache[address]
     try:
-        # 关键修复：使用正确的参数 ssl_verify=False 禁用 SSL 证书验证
+        # 使用自定义 session（支持 SSL 上下文）
+        session = get_requests_session(proxies)
+        # geopy 的 Nominatim 支持传入 session 参数（版本 >= 2.0）
         geolocator = Nominatim(user_agent="solar_app_android", timeout=15,
-                               proxies=proxies, ssl_verify=False)
+                               proxies=proxies, ssl_verify=False, session=session)
         for attempt in range(retries):
             try:
                 location = geolocator.geocode(address, timeout=15)
@@ -140,7 +193,7 @@ def get_coordinates(address, proxies=None, retries=2):
             app.main_screen._update_log(f"Geocode fatal error: {traceback.format_exc()}")
     return None, None, None
 
-# -------- API data fetchers (with correct unit conversion for Open-Meteo) --------
+# -------- API data fetchers (with custom session) --------
 def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3):
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
@@ -148,9 +201,11 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
         "start_date": f"{start_year}-01-01", "end_date": f"{end_year}-12-31",
         "daily": "shortwave_radiation_sum", "timezone": "Asia/Shanghai"
     }
+    session = get_requests_session(proxies)
     for attempt in range(retries):
         try:
-            resp = requests.get(url, params=params, timeout=30, proxies=proxies, verify=False)
+            # 直接使用 session.get，自动应用自定义 SSL 上下文
+            resp = session.get(url, params=params, timeout=30)
             if resp.status_code == 200:
                 data = resp.json()
                 daily = data.get('daily')
@@ -177,10 +232,10 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
                 continue
             else:
                 break
-        except requests.exceptions.Timeout:
-            time.sleep(2 ** attempt)
-            continue
-        except Exception:
+        except Exception as e:
+            app = App.get_running_app()
+            if app and hasattr(app, 'main_screen'):
+                app.main_screen._update_log(f"Open-Meteo error: {traceback.format_exc()}")
             time.sleep(2 ** attempt)
             continue
     return None
@@ -193,11 +248,10 @@ def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3):
         "start": f"{start_year}0101", "end": f"{end_year}1231",
         "format": "JSON", "user": "pvuser"
     }
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    session = get_requests_session(proxies)
     for attempt in range(retries):
         try:
-            resp = requests.get(url, params=params, headers=headers, timeout=30,
-                                proxies=proxies, verify=False)
+            resp = session.get(url, params=params, timeout=30)
             if resp.status_code == 200:
                 data = resp.json()
                 daily_data = data['properties']['parameter']['ALLSKY_SFC_SW_DWN']
@@ -215,15 +269,16 @@ def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3):
                 continue
             else:
                 break
-        except requests.exceptions.Timeout:
-            time.sleep(2 ** attempt)
-            continue
-        except Exception:
+        except Exception as e:
+            app = App.get_running_app()
+            if app and hasattr(app, 'main_screen'):
+                app.main_screen._update_log(f"NASA error: {traceback.format_exc()}")
             time.sleep(2 ** attempt)
             continue
     return None
 
 def fetch_pvgis_data(lat, lon, start_year, end_year, proxies=None, retries=3):
+    # 暂时委托给 NASA
     return fetch_nasa_data(lat, lon, start_year, end_year, proxies, retries)
 
 # -------- Statistics --------
@@ -389,7 +444,7 @@ class LoginScreen(BoxLayout):
             except Exception as e:
                 self.status_label.text = f'❌ Connection error: {str(e)}'
 
-# -------- Main Screen with TabbedPanel --------
+# -------- Main Screen with TabbedPanel (modified network_test) --------
 class MainScreen(BoxLayout):
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', **kwargs)
@@ -520,6 +575,7 @@ class MainScreen(BoxLayout):
 
         self.add_widget(self.tabs)
         self._update_log(f'Proxy env set: {self.proxies if self.proxies else "None"}')
+        self._update_log('SSL context: TLSv1+ with relaxed ciphers (for compatibility)')
 
     # ---- Table operations (unchanged) ----
     def add_table_row(self, addr='', lat='', lon='', contract=''):
@@ -554,7 +610,7 @@ class MainScreen(BoxLayout):
         self.log_text.text = ''
         self.error_summary.clear()
 
-    # ---- Stop / Retry / Network Test ----
+    # ---- Stop / Retry / Network Test (modified) ----
     def stop_processing(self, instance):
         if self.is_running:
             self.is_running = False
@@ -576,23 +632,25 @@ class MainScreen(BoxLayout):
         self._start_processing_from_rows(self.last_rows, self.last_start, self.last_end)
 
     def network_test(self, instance):
-        self._update_log('🌐 Starting network test...')
+        self._update_log('🌐 Starting network test (using custom SSL context)...')
         def test():
+            # 使用自定义 session
+            session = get_requests_session(self.proxies)
             endpoints = [
-                ('Open-Meteo', 'https://archive-api.open-meteo.com/v1/archive', {'latitude':31.23, 'longitude':121.47, 'start_date':'2020-01-01', 'end_date':'2020-01-02', 'daily':'shortwave_radiation_sum', 'timezone':'Asia/Shanghai'}),
-                ('NASA POWER', 'https://power.larc.nasa.gov/api/temporal/daily/point', {'parameters':'ALLSKY_SFC_SW_DWN','community':'RE','longitude':121.47,'latitude':31.23,'start':'20200101','end':'20200102','format':'JSON','user':'pvuser'}),
-                ('Nominatim (OSM)', 'https://nominatim.openstreetmap.org/search', {'q':'Shanghai, China', 'format':'json'})
+                ('Open-Meteo', 'https://archive-api.open-meteo.com/v1/archive',
+                 {'latitude':31.23, 'longitude':121.47, 'start_date':'2020-01-01', 'end_date':'2020-01-02',
+                  'daily':'shortwave_radiation_sum', 'timezone':'Asia/Shanghai'}),
+                ('NASA POWER', 'https://power.larc.nasa.gov/api/temporal/daily/point',
+                 {'parameters':'ALLSKY_SFC_SW_DWN','community':'RE','longitude':121.47,'latitude':31.23,
+                  'start':'20200101','end':'20200102','format':'JSON','user':'pvuser'}),
+                ('Nominatim (OSM)', 'https://nominatim.openstreetmap.org/search',
+                 {'q':'Shanghai, China', 'format':'json'})
             ]
             for name, url, params in endpoints:
                 try:
-                    if 'open-meteo' in url:
-                        resp = requests.get(url, params=params, timeout=10, proxies=self.proxies, verify=False)
-                    elif 'nominatim' in url:
-                        resp = requests.get(url, params=params, timeout=10, proxies=self.proxies,
-                                            headers={'User-Agent':'solar_app'}, verify=False)
-                    else:
-                        resp = requests.get(url, params=params, timeout=10, proxies=self.proxies,
-                                            headers={'User-Agent':'Mozilla/5.0'}, verify=False)
+                    # 使用 session.get（自动应用 SSL 上下文）
+                    headers = {'User-Agent': 'Mozilla/5.0'} if 'nominatim' not in url else {'User-Agent':'solar_app'}
+                    resp = session.get(url, params=params, timeout=15, headers=headers)
                     if resp.status_code == 200:
                         self._update_log(f'✅ {name} reachable (status {resp.status_code})')
                     else:
@@ -602,7 +660,7 @@ class MainScreen(BoxLayout):
             self._update_log('🏁 Network test finished.')
         threading.Thread(target=test, daemon=True).start()
 
-    # ---- Processing ----
+    # ---- Processing (unchanged) ----
     def start_processing(self, instance):
         if self.is_running:
             self._update_log('⚠️ Already running.')
@@ -801,7 +859,7 @@ class MainScreen(BoxLayout):
         if self.total_tasks > 0:
             self.progress.value = min(100, int(self.completed / self.total_tasks * 100))
 
-    # ---- CSV Export ----
+    # ---- CSV Export (unchanged) ----
     def _export_csv(self):
         if not self.yearly:
             self._update_log('⚠️ No data to export')
@@ -845,7 +903,7 @@ class MainScreen(BoxLayout):
         except Exception as e:
             self._update_log(f'❌ Export failed: {e}')
 
-    # ---- Share Data ----
+    # ---- Share Data (unchanged) ----
     def share_data(self, instance):
         if not self.yearly:
             self._update_log('⚠️ No data to share, collect data first.')
