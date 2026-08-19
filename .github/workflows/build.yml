@@ -31,10 +31,12 @@ jobs:
         with:
           python-version: '3.9'
 
+      # ----- 清理缓存（手动触发） -----
       - name: Force clean buildozer cache
         if: inputs.clean_cache == true
-        run: rm -rf .buildozer
+        run: rm -rf ~/.buildozer
 
+      # ----- 增加交换空间（防止内存不足） -----
       - name: Increase swap space
         run: |
           sudo swapoff -a || true
@@ -45,6 +47,7 @@ jobs:
           sudo swapon /swapfile
           free -h
 
+      # ----- 系统依赖 -----
       - name: Install system dependencies
         run: |
           sudo apt update
@@ -62,25 +65,24 @@ jobs:
           pip install --upgrade pip
           pip install buildozer cython
 
-      # ----- 缓存管理 -----
+      # ----- 缓存管理（使用 ~/.buildozer 目录） -----
       - name: Restore buildozer cache
         uses: actions/cache@v4
         id: cache-buildozer
         with:
-          path: .buildozer
+          path: ~/.buildozer
           key: buildozer-${{ runner.os }}-ndk25b-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
             buildozer-${{ runner.os }}-ndk25b-
             buildozer-${{ runner.os }}-
 
-      - name: Clean old build artifacts (if cache miss)
-        if: steps.cache-buildozer.outputs.cache-hit != 'true' || inputs.clean_cache == true
-        run: rm -rf .buildozer/android/platform/build-*
-
-      # ----- 核心构建步骤（含完整 SDK 安装） -----
+      # ----- 核心构建步骤（含完整 SDK 安装，带错误检查） -----
       - name: Build APK with verbose logging
         id: build
         run: |
+          # 启用严格错误检查
+          set -e
+
           # ---- 1. 确保 buildozer.spec 存在 ----
           if [ ! -f buildozer.spec ]; then
             SPEC_PATH=$(find $GITHUB_WORKSPACE -name "buildozer.spec" -type f | head -1)
@@ -102,29 +104,58 @@ jobs:
             echo "⬇️ 下载 command-line tools..."
             mkdir -p "$ANDROID_HOME/cmdline-tools"
             cd "$ANDROID_HOME/cmdline-tools"
-            wget -q --show-progress https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+
+            # 使用稳定且长期可用的版本（2023 年 9 月更新）
+            # 如果此链接失效，可替换为最新版本号，但该版本已稳定近一年
+            CMDLINE_URL="https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip"
+            wget --progress=dot:giga -O cmdline-tools.zip "$CMDLINE_URL"
+
+            # 解压并验证
             unzip -q cmdline-tools.zip
+            if [ ! -d "cmdline-tools" ]; then
+              echo "❌ 解压后未找到 'cmdline-tools' 目录"
+              exit 1
+            fi
             mv cmdline-tools latest
+
+            # 确保 sdkmanager 可执行
+            if [ ! -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+              echo "❌ sdkmanager 未在预期位置生成"
+              exit 1
+            fi
+
+            # 添加到 PATH 以便后续使用
             export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
-            # 接受许可证
-            yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses > /dev/null 2>&1 || true
-            # 安装必要的组件
+
+            # 接受许可证（失败时停止）
+            echo "📜 接受 Android 许可证..."
+            yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses
+
+            # 安装必要的平台工具、平台和构建工具
+            echo "📦 安装 SDK 组件..."
             sdkmanager --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-31" "build-tools;31.0.0"
+
             echo "✅ SDK 组件安装完成"
           else
-            echo "✅ command-line tools 已存在"
+            echo "✅ command-line tools 已存在，跳过下载"
           fi
 
-          # ---- 4. 将 cmdline-tools 复制到 tools 目录（解决 Buildozer 查找路径） ----
+          # ---- 4. 创建 tools 目录并复制 cmdline-tools 内容（解决 Buildozer 查找路径） ----
           mkdir -p "$ANDROID_HOME/tools"
+          # 复制最新版本内容到 tools（如果目标已存在，先清空以消除干扰）
+          rm -rf "$ANDROID_HOME/tools/bin" "$ANDROID_HOME/tools/lib" 2>/dev/null || true
           cp -r "$ANDROID_HOME/cmdline-tools/latest/." "$ANDROID_HOME/tools/"
+
           # 验证 sdkmanager 是否可用
           if [ -f "$ANDROID_HOME/tools/bin/sdkmanager" ]; then
             echo "✅ sdkmanager 已就绪: $ANDROID_HOME/tools/bin/sdkmanager"
           else
-            echo "❌ sdkmanager 未找到！"
+            echo "❌ sdkmanager 未找到！复制操作可能失败。"
             exit 1
           fi
+
+          # 将 tools/bin 添加到 PATH（备用）
+          export PATH="$ANDROID_HOME/tools/bin:$PATH"
 
           # ---- 5. 回到工作目录 ----
           cd $GITHUB_WORKSPACE
