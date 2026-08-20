@@ -2,8 +2,10 @@
 """
 Android Solar Radiation Collector - SSL Adapter Fix (Tabbed UI)
 Last updated: 2026.08.20
-- PVGIS: 直接使用 TMY（典型气象年）接口
-- 网络测试增加 PVGIS TMY 端点
+- 修复 SSL check_hostname 冲突
+- PVGIS TMY 使用 /tmy 端点
+- 地理编码改用 requests 直接调用 Nominatim API
+- 网络测试覆盖全部数据源
 """
 
 import requests
@@ -19,7 +21,6 @@ from datetime import datetime
 import configparser
 import ssl
 import urllib3
-from geopy.geocoders import Nominatim
 
 # 禁用 urllib3 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -34,12 +35,10 @@ def create_ssl_context():
         context = ssl.create_default_context()
         context.minimum_version = ssl.TLSVersion.TLSv1
         context.set_ciphers('DEFAULT@SECLEVEL=1')
-        # 关键修复：禁用验证和主机名检查
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         return context
     except AttributeError:
-        # 旧版 Python（<3.7）回退到完全不验证的上下文
         return ssl._create_unverified_context()
 
 # ---------- 自定义 HTTPAdapter 注入 SSL 上下文 ----------
@@ -66,7 +65,6 @@ def get_requests_session(proxies=None):
     adapter = CustomHTTPAdapter(max_retries=retry)
     session.mount('https://', adapter)
     session.mount('http://', adapter)
-    # 设置默认 User-Agent
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36'
     })
@@ -162,47 +160,65 @@ def set_proxy_env(proxies):
             os.environ['HTTPS_PROXY'] = proxies['https']
             os.environ['https_proxy'] = proxies['https']
 
-# ---------- 地理编码（带缓存，改进 User-Agent 并降低请求频率） ----------
+# ---------- 地理编码（直接使用 requests，不依赖 geopy） ----------
 _geocode_cache = {}
 
 def get_coordinates(address, proxies=None, retries=2):
+    """
+    使用 requests 直接调用 Nominatim API，替代 geopy。
+    """
     print(f"🗺️ Geocoding: {address}")
     if address in _geocode_cache:
         return _geocode_cache[address]
-    
-    # 自定义 User-Agent（包含真实邮箱，降低被拒风险）
+
     user_agent = "SolarCollectorApp/1.0 (zhongyw@jetion.com.cn)"
-    
-    try:
-        session = get_requests_session(proxies)
-        geolocator = Nominatim(
-            user_agent=user_agent,
-            timeout=15,
-            proxies=proxies,
-            ssl_verify=False,
-            session=session,
-            headers={'User-Agent': user_agent}  # 显式指定 HTTP 头
-        )
-        for attempt in range(retries):
-            try:
-                location = geolocator.geocode(address, timeout=15)
-                if location:
-                    result = (location.latitude, location.longitude, location.address)
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {
+        "q": address,
+        "format": "json",
+        "limit": 1,
+        "addressdetails": 1,
+    }
+    headers = {
+        "User-Agent": user_agent,
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    session = get_requests_session(proxies)
+    for attempt in range(retries):
+        try:
+            resp = session.get(url, params=params, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and len(data) > 0:
+                    lat = float(data[0]['lat'])
+                    lon = float(data[0]['lon'])
+                    display_name = data[0].get('display_name', address)
+                    result = (lat, lon, display_name)
                     _geocode_cache[address] = result
                     return result
-            except Exception as e:
-                print(f"⚠️ Attempt {attempt+1} failed: {e}")
-                app = App.get_running_app()
-                if app and hasattr(app, 'main_screen'):
-                    app.main_screen._update_log(f"Geocode attempt {attempt+1}: {traceback.format_exc()}")
-                time.sleep(2 ** attempt)  # 指数退避
-            time.sleep(1)  # 每次尝试后额外等待，降低频率
-    except Exception as e:
-        print(f"❌ Geocoding error: {e}")
-        traceback.print_exc()
-        app = App.get_running_app()
-        if app and hasattr(app, 'main_screen'):
-            app.main_screen._update_log(f"Geocode fatal error: {traceback.format_exc()}")
+                else:
+                    # 无结果
+                    app = App.get_running_app()
+                    if app and hasattr(app, 'main_screen'):
+                        app.main_screen._update_log(f"⚠️ No location found for {address}")
+                    time.sleep(1)
+            elif resp.status_code == 429 or resp.status_code == 403:
+                # 速率限制或被拒，等待更长时间
+                wait_time = 2 ** attempt * 2
+                time.sleep(wait_time)
+                continue
+            else:
+                time.sleep(2 ** attempt)
+        except Exception as e:
+            print(f"⚠️ Attempt {attempt+1} failed: {e}")
+            app = App.get_running_app()
+            if app and hasattr(app, 'main_screen'):
+                app.main_screen._update_log(f"Geocode request error: {traceback.format_exc()}")
+            time.sleep(2 ** attempt)
+        time.sleep(1)
+
     return None, None, None
 
 # ---------- API 数据获取（使用自定义 session） ----------
@@ -228,7 +244,6 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
                         continue
                     year = int(dt[:4])
                     yearly[year] = yearly.get(year, 0.0) + val
-                # 转换 MJ/m² → kWh/m²
                 result = []
                 for y in range(start_year, end_year + 1):
                     if y in yearly:
@@ -290,18 +305,16 @@ def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3):
 
 def fetch_pvgis_tmy(lat, lon, start_year, end_year, proxies=None, retries=3):
     """
-    从 PVGIS 获取 TMY（典型气象年）数据，返回逐年列表（所有年份使用同一典型年值）。
+    从 PVGIS 获取 TMY（典型气象年）数据，使用正确的 /tmy 端点。
+    返回逐年列表（所有年份使用同一典型年值）。
     """
     session = get_requests_session(proxies)
-    tmy_url = "https://re.jrc.ec.europa.eu/api/v5_2/pvgis"
+    tmy_url = "https://re.jrc.ec.europa.eu/api/v5_2/tmy"   # 修正为 /tmy
     params_tmy = {
         "lat": lat,
         "lon": lon,
         "outputformat": "json",
-        "components": "1",
-        "usehorizon": "1",
-        "userhorizon": "0",
-        "pvsyst": "0"
+        "components": "1"
     }
     for attempt in range(retries):
         try:
@@ -309,10 +322,9 @@ def fetch_pvgis_tmy(lat, lon, start_year, end_year, proxies=None, retries=3):
             if resp.status_code == 200:
                 data = resp.json()
                 monthly = data.get('outputs', {}).get('monthly', {})
-                ghi_monthly = monthly.get('G(h)', [])  # 12个月
+                ghi_monthly = monthly.get('G(h)', [])
                 if len(ghi_monthly) == 12:
-                    annual_ghi = sum(ghi_monthly)  # 年总值 (kWh/m²/yr)
-                    # 构造逐年列表，每年都等于该典型年值
+                    annual_ghi = sum(ghi_monthly)
                     result = []
                     for y in range(start_year, end_year + 1):
                         result.append({'YEAR': y, 'GHI_kWh_m2_year': annual_ghi})
@@ -408,7 +420,7 @@ class LineChartWidget(Widget):
                 Line(circle=(points[i], points[i+1], 5), width=2)
 
 # ==============================================================
-# ------------------- 登录界面（未变动） ------------------------
+# ------------------- 登录界面 --------------------------------
 # ==============================================================
 class LoginScreen(BoxLayout):
     def __init__(self, app, **kwargs):
@@ -483,7 +495,6 @@ class LoginScreen(BoxLayout):
                 self.status_label.text = '❌ Invalid account or password'
         else:
             try:
-                # 使用自定义 session（支持 SSL）
                 session = get_requests_session()
                 resp = session.post(f"{server}/login", json={'username': user, 'password': pwd}, timeout=10)
                 if resp.status_code == 200:
@@ -504,7 +515,7 @@ class LoginScreen(BoxLayout):
                 self.status_label.text = f'❌ Connection error: {str(e)}'
 
 # ==============================================================
-# ------------------- 主界面（含修复） --------------------------
+# ------------------- 主界面 -----------------------------------
 # ==============================================================
 class MainScreen(BoxLayout):
     def __init__(self, app, **kwargs):
@@ -533,7 +544,6 @@ class MainScreen(BoxLayout):
         # ---- Tab1: 数据 ----
         tab_data = TabbedPanelHeader(text='📊 Data')
         data_content = BoxLayout(orientation='vertical', spacing=5, padding=5)
-        # 参数输入
         param_box = BoxLayout(orientation='vertical', size_hint_y=None, height=120, spacing=3)
         row1 = BoxLayout(spacing=5)
         row1.add_widget(Label(text='Start:', size_hint_x=0.2))
@@ -553,7 +563,6 @@ class MainScreen(BoxLayout):
         param_box.add_widget(row2)
         data_content.add_widget(param_box)
 
-        # 表格
         self.table_container = ScrollView(size_hint_y=0.3)
         self.table_grid = GridLayout(cols=4, size_hint_y=None, spacing=2, row_default_height=40)
         self.table_grid.bind(minimum_height=self.table_grid.setter('height'))
@@ -563,7 +572,6 @@ class MainScreen(BoxLayout):
         self.table_container.add_widget(self.table_grid)
         data_content.add_widget(self.table_container)
 
-        # 按钮行1
         btn_row1 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         add_btn = Button(text='Add Row')
         add_btn.bind(on_press=self.add_row)
@@ -582,7 +590,6 @@ class MainScreen(BoxLayout):
         btn_row1.add_widget(save_btn)
         data_content.add_widget(btn_row1)
 
-        # 按钮行2
         btn_row2 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         self.start_btn = Button(text='Start', background_color=(0.2,0.7,0.2,1))
         self.start_btn.bind(on_press=self.start_processing)
@@ -598,7 +605,6 @@ class MainScreen(BoxLayout):
         btn_row2.add_widget(self.test_btn)
         data_content.add_widget(btn_row2)
 
-        # 进度条
         self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=20)
         data_content.add_widget(self.progress)
 
@@ -639,7 +645,7 @@ class MainScreen(BoxLayout):
         self._update_log(f'Proxy env set: {self.proxies if self.proxies else "None"}')
         self._update_log('SSL context: injected via custom HTTPAdapter (TLSv1+, verification disabled)')
 
-    # ---- 表格操作（未变） ----
+    # ---- 表格操作 ----
     def add_table_row(self, addr='', lat='', lon='', contract=''):
         self.table_grid.add_widget(TextInput(text=addr, multiline=False, font_size='12sp'))
         self.table_grid.add_widget(TextInput(text=lat, multiline=False, font_size='12sp'))
@@ -663,7 +669,6 @@ class MainScreen(BoxLayout):
             self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True, font_size='12sp'))
 
     def load_csv(self, instance):
-        # 待实现（可留空）
         pass
 
     def save_csv(self, instance):
@@ -673,7 +678,7 @@ class MainScreen(BoxLayout):
         self.log_text.text = ''
         self.error_summary.clear()
 
-    # ---- 停止 / 重试 / 网络测试（含 PVGIS TMY） ----
+    # ---- 停止 / 重试 / 网络测试 ----
     def stop_processing(self, instance):
         if self.is_running:
             self.is_running = False
@@ -706,7 +711,7 @@ class MainScreen(BoxLayout):
                 ('NASA POWER', 'https://power.larc.nasa.gov/api/temporal/daily/point',
                  {'parameters':'ALLSKY_SFC_SW_DWN','community':'RE','longitude':121.47,'latitude':31.23,
                   'start':'20200101','end':'20200102','format':'JSON','user':'pvuser'}),
-                ('PVGIS TMY', 'https://re.jrc.ec.europa.eu/api/v5_2/pvgis',
+                ('PVGIS TMY', 'https://re.jrc.ec.europa.eu/api/v5_2/tmy',
                  {'lat':31.23, 'lon':121.47, 'outputformat':'json', 'components':'1'}),
                 ('Nominatim (OSM)', 'https://nominatim.openstreetmap.org/search',
                  {'q':'Shanghai, China', 'format':'json'})
@@ -805,7 +810,6 @@ class MainScreen(BoxLayout):
 
             if lat is None or lon is None:
                 lat, lon, _ = self._geocode_address(addr)
-                # 地理编码后额外延迟，降低 OSM 请求频率
                 time.sleep(0.5)
                 if lat is None:
                     err_msg = f'Geocoding failed for {addr}'
@@ -852,7 +856,7 @@ class MainScreen(BoxLayout):
                 Clock.schedule_once(lambda dt, a=addr: self._show_error_popup(a), 0)
 
             self._update_progress(1)
-            time.sleep(0.5)  # 每个地址处理完后等待，避免过载
+            time.sleep(0.5)
 
         self._update_log('🎉 All tasks completed!')
         with self._lock:
@@ -981,9 +985,7 @@ class MainScreen(BoxLayout):
                 self._update_log('❌ CSV export failed, cannot share.')
                 return
 
-        # 截图图表
         try:
-            # 强制布局刷新
             self.chart_box.do_layout()
             import tempfile
             img_path = os.path.join(tempfile.gettempdir(), f'chart_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
