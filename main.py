@@ -2,6 +2,8 @@
 """
 Android Solar Radiation Collector - SSL Adapter Fix (Tabbed UI)
 Last updated: 2026.08.20
+- PVGIS: 直接使用 TMY（典型气象年）接口
+- 网络测试增加 PVGIS TMY 端点
 """
 
 import requests
@@ -160,17 +162,27 @@ def set_proxy_env(proxies):
             os.environ['HTTPS_PROXY'] = proxies['https']
             os.environ['https_proxy'] = proxies['https']
 
-# ---------- 地理编码（带缓存） ----------
+# ---------- 地理编码（带缓存，改进 User-Agent 并降低请求频率） ----------
 _geocode_cache = {}
 
 def get_coordinates(address, proxies=None, retries=2):
     print(f"🗺️ Geocoding: {address}")
     if address in _geocode_cache:
         return _geocode_cache[address]
+    
+    # 自定义 User-Agent（包含真实邮箱，降低被拒风险）
+    user_agent = "SolarCollectorApp/1.0 (zhongyw@jetion.com.cn)"
+    
     try:
         session = get_requests_session(proxies)
-        geolocator = Nominatim(user_agent="solar_app_android", timeout=15,
-                               proxies=proxies, ssl_verify=False, session=session)
+        geolocator = Nominatim(
+            user_agent=user_agent,
+            timeout=15,
+            proxies=proxies,
+            ssl_verify=False,
+            session=session,
+            headers={'User-Agent': user_agent}  # 显式指定 HTTP 头
+        )
         for attempt in range(retries):
             try:
                 location = geolocator.geocode(address, timeout=15)
@@ -183,8 +195,8 @@ def get_coordinates(address, proxies=None, retries=2):
                 app = App.get_running_app()
                 if app and hasattr(app, 'main_screen'):
                     app.main_screen._update_log(f"Geocode attempt {attempt+1}: {traceback.format_exc()}")
-                time.sleep(2 ** attempt)
-            time.sleep(1)
+                time.sleep(2 ** attempt)  # 指数退避
+            time.sleep(1)  # 每次尝试后额外等待，降低频率
     except Exception as e:
         print(f"❌ Geocoding error: {e}")
         traceback.print_exc()
@@ -276,9 +288,53 @@ def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3):
             continue
     return None
 
+def fetch_pvgis_tmy(lat, lon, start_year, end_year, proxies=None, retries=3):
+    """
+    从 PVGIS 获取 TMY（典型气象年）数据，返回逐年列表（所有年份使用同一典型年值）。
+    """
+    session = get_requests_session(proxies)
+    tmy_url = "https://re.jrc.ec.europa.eu/api/v5_2/pvgis"
+    params_tmy = {
+        "lat": lat,
+        "lon": lon,
+        "outputformat": "json",
+        "components": "1",
+        "usehorizon": "1",
+        "userhorizon": "0",
+        "pvsyst": "0"
+    }
+    for attempt in range(retries):
+        try:
+            resp = session.get(tmy_url, params=params_tmy, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json()
+                monthly = data.get('outputs', {}).get('monthly', {})
+                ghi_monthly = monthly.get('G(h)', [])  # 12个月
+                if len(ghi_monthly) == 12:
+                    annual_ghi = sum(ghi_monthly)  # 年总值 (kWh/m²/yr)
+                    # 构造逐年列表，每年都等于该典型年值
+                    result = []
+                    for y in range(start_year, end_year + 1):
+                        result.append({'YEAR': y, 'GHI_kWh_m2_year': annual_ghi})
+                    return result
+                else:
+                    continue
+            elif resp.status_code >= 500:
+                time.sleep(2 ** attempt)
+                continue
+            else:
+                break
+        except Exception as e:
+            app = App.get_running_app()
+            if app and hasattr(app, 'main_screen'):
+                app.main_screen._update_log(f"PVGIS TMY error: {traceback.format_exc()}")
+            time.sleep(2 ** attempt)
+            continue
+    return None
+
 def fetch_pvgis_data(lat, lon, start_year, end_year, proxies=None, retries=3):
-    # 暂委托给 NASA
-    return fetch_nasa_data(lat, lon, start_year, end_year, proxies, retries)
+    """直接使用 PVGIS TMY（典型气象年）接口"""
+    return fetch_pvgis_tmy(lat, lon, start_year, end_year, proxies, retries)
 
 # ---------- 统计计算 ----------
 def compute_statistics(data_list):
@@ -617,7 +673,7 @@ class MainScreen(BoxLayout):
         self.log_text.text = ''
         self.error_summary.clear()
 
-    # ---- 停止 / 重试 / 网络测试（网络测试已修复） ----
+    # ---- 停止 / 重试 / 网络测试（含 PVGIS TMY） ----
     def stop_processing(self, instance):
         if self.is_running:
             self.is_running = False
@@ -642,6 +698,7 @@ class MainScreen(BoxLayout):
         self._update_log('🌐 Starting network test (using custom SSL adapter)...')
         def test():
             session = get_requests_session(self.proxies)
+            user_agent = "SolarCollectorApp/1.0 (zhongyw@jetion.com.cn)"
             endpoints = [
                 ('Open-Meteo', 'https://archive-api.open-meteo.com/v1/archive',
                  {'latitude':31.23, 'longitude':121.47, 'start_date':'2020-01-01', 'end_date':'2020-01-02',
@@ -649,12 +706,14 @@ class MainScreen(BoxLayout):
                 ('NASA POWER', 'https://power.larc.nasa.gov/api/temporal/daily/point',
                  {'parameters':'ALLSKY_SFC_SW_DWN','community':'RE','longitude':121.47,'latitude':31.23,
                   'start':'20200101','end':'20200102','format':'JSON','user':'pvuser'}),
+                ('PVGIS TMY', 'https://re.jrc.ec.europa.eu/api/v5_2/pvgis',
+                 {'lat':31.23, 'lon':121.47, 'outputformat':'json', 'components':'1'}),
                 ('Nominatim (OSM)', 'https://nominatim.openstreetmap.org/search',
                  {'q':'Shanghai, China', 'format':'json'})
             ]
             for name, url, params in endpoints:
                 try:
-                    headers = {'User-Agent': 'Mozilla/5.0'} if 'nominatim' not in url else {'User-Agent':'solar-app/1.0 (contact@example.com)'}
+                    headers = {'User-Agent': user_agent} if 'nominatim' in name.lower() else {'User-Agent': 'Mozilla/5.0'}
                     resp = session.get(url, params=params, timeout=15, headers=headers)
                     if resp.status_code == 200:
                         self._update_log(f'✅ {name} reachable (status {resp.status_code})')
@@ -665,7 +724,7 @@ class MainScreen(BoxLayout):
             self._update_log('🏁 Network test finished.')
         threading.Thread(target=test, daemon=True).start()
 
-    # ---- 处理流程（未改动，但内部使用修复后的 session） ----
+    # ---- 处理流程 ----
     def start_processing(self, instance):
         if self.is_running:
             self._update_log('⚠️ Already running.')
@@ -746,6 +805,8 @@ class MainScreen(BoxLayout):
 
             if lat is None or lon is None:
                 lat, lon, _ = self._geocode_address(addr)
+                # 地理编码后额外延迟，降低 OSM 请求频率
+                time.sleep(0.5)
                 if lat is None:
                     err_msg = f'Geocoding failed for {addr}'
                     self.error_summary.append(err_msg)
@@ -756,7 +817,7 @@ class MainScreen(BoxLayout):
             sources = [
                 ('Open-Meteo', fetch_openmeteo_data),
                 ('NASA POWER', fetch_nasa_data),
-                ('PVGIS', fetch_pvgis_data)
+                ('PVGIS TMY', fetch_pvgis_data)
             ]
             addr_charts = []
             for src_name, fetch_func in sources:
@@ -791,7 +852,7 @@ class MainScreen(BoxLayout):
                 Clock.schedule_once(lambda dt, a=addr: self._show_error_popup(a), 0)
 
             self._update_progress(1)
-            time.sleep(0.5)
+            time.sleep(0.5)  # 每个地址处理完后等待，避免过载
 
         self._update_log('🎉 All tasks completed!')
         with self._lock:
