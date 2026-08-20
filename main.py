@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Android Solar Radiation Collector - SSL Adapter Fix (Tabbed UI)
-Last updated: 2026.08.19
+Last updated: 2026.08.20
 """
 
 import requests
@@ -15,31 +15,32 @@ import tempfile
 import urllib.request
 from datetime import datetime
 import configparser
-import warnings
 import ssl
 import urllib3
 from geopy.geocoders import Nominatim
 
-# 禁用 SSL 警告
+# 禁用 urllib3 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ---- 自定义 SSL 上下文（宽松 TLS 版本） ----
+# ---------- 自定义 SSL 上下文（修复 check_hostname 冲突） ----------
 def create_ssl_context():
     """
-    创建兼容性更好的 SSL 上下文，允许 TLSv1.0+ 和常见加密套件。
+    创建兼容性更好的 SSL 上下文，允许 TLSv1.0+ 和常见加密套件，
+    并显式禁用证书验证与主机名检查，避免 'CERT_NONE with check_hostname' 错误。
     """
     try:
         context = ssl.create_default_context()
-        # 允许 TLSv1.0, TLSv1.1, TLSv1.2
         context.minimum_version = ssl.TLSVersion.TLSv1
-        # 放宽加密套件限制（允许一些低安全性但广泛使用的套件）
         context.set_ciphers('DEFAULT@SECLEVEL=1')
+        # 关键修复：禁用验证和主机名检查
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
         return context
     except AttributeError:
-        # 旧版 Python 没有 TLSVersion，直接创建不验证的上下文
+        # 旧版 Python（<3.7）回退到完全不验证的上下文
         return ssl._create_unverified_context()
 
-# ---- 自定义 HTTPAdapter，用于注入 SSL 上下文 ----
+# ---------- 自定义 HTTPAdapter 注入 SSL 上下文 ----------
 class CustomHTTPAdapter(requests.adapters.HTTPAdapter):
     def __init__(self, ssl_context=None, *args, **kwargs):
         self.ssl_context = ssl_context or create_ssl_context()
@@ -53,37 +54,25 @@ class CustomHTTPAdapter(requests.adapters.HTTPAdapter):
         kwargs['ssl_context'] = self.ssl_context
         return super().proxy_manager_for(*args, **kwargs)
 
-# ---- 全局 requests Session（带自定义适配器） ----
+# ---------- 全局 Session（带重试和自定义适配器） ----------
 def get_requests_session(proxies=None):
     """
-    返回配置好的 requests Session，使用自定义 SSL 适配器，并设置重试。
+    返回配置好的 requests Session，使用自定义 SSL 适配器并设置重试策略。
     """
     session = requests.Session()
-    # 使用自定义适配器（注入 SSL 上下文）
-    adapter = CustomHTTPAdapter()
+    retry = urllib3.Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+    adapter = CustomHTTPAdapter(max_retries=retry)
     session.mount('https://', adapter)
-    session.mount('http://', adapter)  # 也挂载 http（虽然不影响）
-    # 设置验证为 False（避免证书验证，但由上下文控制 TLS 版本）
-    session.verify = False
+    session.mount('http://', adapter)
     # 设置默认 User-Agent
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36'
     })
-    # 添加重试策略
-    retry = urllib3.Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
-    adapter = requests.adapters.HTTPAdapter(max_retries=retry)
-    # 注意：这里重新创建了一个 adapter，但不会覆盖上面的 custom adapter，
-    # 因为 mount 是覆盖的，我们只需保证 custom adapter 有重试属性即可。
-    # 更好的做法是让 custom adapter 也支持重试。
-    # 简单处理：直接使用 custom adapter 并设置 max_retries
-    custom_adapter = CustomHTTPAdapter(max_retries=retry)
-    session.mount('https://', custom_adapter)
-    session.mount('http://', custom_adapter)
     if proxies:
         session.proxies.update(proxies)
     return session
 
-# ---- 为了兼容现有代码，保留一个全局 session 实例 ----
+# ---------- 全局 Session 单例 ----------
 _DEFAULT_SESSION = None
 
 def get_default_session():
@@ -92,16 +81,13 @@ def get_default_session():
         _DEFAULT_SESSION = get_requests_session()
     return _DEFAULT_SESSION
 
-# ---- 全局异常处理 ----
+# ---------- 全局异常处理 ----------
 def global_exception_handler(exc_type, exc_value, exc_tb):
     error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
     try:
         from kivy.app import App
         app = App.get_running_app()
-        if app:
-            log_dir = app.user_data_dir
-        else:
-            log_dir = tempfile.gettempdir()
+        log_dir = app.user_data_dir if app else tempfile.gettempdir()
         os.makedirs(log_dir, exist_ok=True)
         with open(os.path.join(log_dir, 'app_crash.log'), 'a', encoding='utf-8') as f:
             f.write(f"\n--- Crash at {datetime.now()} ---\n{error_msg}\n")
@@ -111,10 +97,8 @@ def global_exception_handler(exc_type, exc_value, exc_tb):
     sys.__excepthook__(exc_type, exc_value, exc_tb)
 
 sys.excepthook = global_exception_handler
-# ---------------------------------------------
 
-import requests
-from geopy.geocoders import Nominatim
+# ---------- 导入 Kivy 相关 ----------
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
@@ -134,14 +118,12 @@ from kivy.uix.checkbox import CheckBox
 from kivy.uix.tabbedpanel import TabbedPanel, TabbedPanelHeader
 
 # ==============================================================
+# ------------------------ 工具函数 ----------------------------
+# ==============================================================
 
-# -------- Utility: internal storage and proxy detection --------
 def get_app_data_dir():
     app = App.get_running_app()
-    if app:
-        return app.user_data_dir
-    else:
-        return os.path.expanduser('~/.solar_collector_data')
+    return app.user_data_dir if app else os.path.expanduser('~/.solar_collector_data')
 
 def detect_proxy_enhanced():
     proxies = {}
@@ -178,7 +160,7 @@ def set_proxy_env(proxies):
             os.environ['HTTPS_PROXY'] = proxies['https']
             os.environ['https_proxy'] = proxies['https']
 
-# -------- Geocoding with cache and SSL verification disabled (fixed param) --------
+# ---------- 地理编码（带缓存） ----------
 _geocode_cache = {}
 
 def get_coordinates(address, proxies=None, retries=2):
@@ -186,9 +168,7 @@ def get_coordinates(address, proxies=None, retries=2):
     if address in _geocode_cache:
         return _geocode_cache[address]
     try:
-        # 使用自定义 session（支持 SSL 上下文）
         session = get_requests_session(proxies)
-        # geopy 的 Nominatim 支持传入 session 参数（版本 >= 2.0）
         geolocator = Nominatim(user_agent="solar_app_android", timeout=15,
                                proxies=proxies, ssl_verify=False, session=session)
         for attempt in range(retries):
@@ -213,7 +193,7 @@ def get_coordinates(address, proxies=None, retries=2):
             app.main_screen._update_log(f"Geocode fatal error: {traceback.format_exc()}")
     return None, None, None
 
-# -------- API data fetchers (with custom session) --------
+# ---------- API 数据获取（使用自定义 session） ----------
 def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3):
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
@@ -236,7 +216,7 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
                         continue
                     year = int(dt[:4])
                     yearly[year] = yearly.get(year, 0.0) + val
-                # 正确转换：MJ/m² → kWh/m² (1 kWh = 3.6 MJ)
+                # 转换 MJ/m² → kWh/m²
                 result = []
                 for y in range(start_year, end_year + 1):
                     if y in yearly:
@@ -280,7 +260,7 @@ def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3):
                         continue
                     year = int(d[:4])
                     yearly[year] = yearly.get(year, 0.0) + v
-                result = [{'YEAR': y, 'GHI_kWh_m2_year': yearly[y]} for y in sorted(yearly) if y >= start_year and y <= end_year]
+                result = [{'YEAR': y, 'GHI_kWh_m2_year': yearly[y]} for y in sorted(yearly) if start_year <= y <= end_year]
                 if result:
                     return result
             elif resp.status_code >= 500:
@@ -297,10 +277,10 @@ def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3):
     return None
 
 def fetch_pvgis_data(lat, lon, start_year, end_year, proxies=None, retries=3):
-    # 暂时委托给 NASA
+    # 暂委托给 NASA
     return fetch_nasa_data(lat, lon, start_year, end_year, proxies, retries)
 
-# -------- Statistics --------
+# ---------- 统计计算 ----------
 def compute_statistics(data_list):
     if not data_list:
         return None
@@ -315,7 +295,9 @@ def compute_statistics(data_list):
         'years': len(vals)
     }
 
-# ========== Canvas Plot Widget ==========
+# ==============================================================
+# -------------------- 绘图组件 --------------------------------
+# ==============================================================
 class LineChartWidget(Widget):
     def __init__(self, x_values, y_values, title='', x_label='Year', y_label='GHI (kWh/m²)', **kwargs):
         super().__init__(**kwargs)
@@ -369,9 +351,9 @@ class LineChartWidget(Widget):
                 Color(1, 0, 0, 1)
                 Line(circle=(points[i], points[i+1], 5), width=2)
 
-# =============================================
-
-# -------- Login Screen (unchanged) --------
+# ==============================================================
+# ------------------- 登录界面（未变动） ------------------------
+# ==============================================================
 class LoginScreen(BoxLayout):
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', spacing=10, padding=20)
@@ -445,7 +427,9 @@ class LoginScreen(BoxLayout):
                 self.status_label.text = '❌ Invalid account or password'
         else:
             try:
-                resp = requests.post(f"{server}/login", json={'username': user, 'password': pwd}, timeout=10)
+                # 使用自定义 session（支持 SSL）
+                session = get_requests_session()
+                resp = session.post(f"{server}/login", json={'username': user, 'password': pwd}, timeout=10)
                 if resp.status_code == 200:
                     data = resp.json()
                     token = data.get('access_token')
@@ -463,7 +447,9 @@ class LoginScreen(BoxLayout):
             except Exception as e:
                 self.status_label.text = f'❌ Connection error: {str(e)}'
 
-# -------- Main Screen with TabbedPanel (modified network_test) --------
+# ==============================================================
+# ------------------- 主界面（含修复） --------------------------
+# ==============================================================
 class MainScreen(BoxLayout):
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', **kwargs)
@@ -481,6 +467,7 @@ class MainScreen(BoxLayout):
         self.last_rows = []
         self.last_start = 2010
         self.last_end = 2025
+        self._last_csv_path = None
 
         # 创建 TabbedPanel
         self.tabs = TabbedPanel(do_default_tab=False)
@@ -594,9 +581,9 @@ class MainScreen(BoxLayout):
 
         self.add_widget(self.tabs)
         self._update_log(f'Proxy env set: {self.proxies if self.proxies else "None"}')
-        self._update_log('SSL context: injected via custom HTTPAdapter (TLSv1+)')
+        self._update_log('SSL context: injected via custom HTTPAdapter (TLSv1+, verification disabled)')
 
-    # ---- Table operations (unchanged) ----
+    # ---- 表格操作（未变） ----
     def add_table_row(self, addr='', lat='', lon='', contract=''):
         self.table_grid.add_widget(TextInput(text=addr, multiline=False, font_size='12sp'))
         self.table_grid.add_widget(TextInput(text=lat, multiline=False, font_size='12sp'))
@@ -620,6 +607,7 @@ class MainScreen(BoxLayout):
             self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True, font_size='12sp'))
 
     def load_csv(self, instance):
+        # 待实现（可留空）
         pass
 
     def save_csv(self, instance):
@@ -629,7 +617,7 @@ class MainScreen(BoxLayout):
         self.log_text.text = ''
         self.error_summary.clear()
 
-    # ---- Stop / Retry / Network Test (modified) ----
+    # ---- 停止 / 重试 / 网络测试（网络测试已修复） ----
     def stop_processing(self, instance):
         if self.is_running:
             self.is_running = False
@@ -653,7 +641,6 @@ class MainScreen(BoxLayout):
     def network_test(self, instance):
         self._update_log('🌐 Starting network test (using custom SSL adapter)...')
         def test():
-            # 使用自定义 session
             session = get_requests_session(self.proxies)
             endpoints = [
                 ('Open-Meteo', 'https://archive-api.open-meteo.com/v1/archive',
@@ -667,7 +654,7 @@ class MainScreen(BoxLayout):
             ]
             for name, url, params in endpoints:
                 try:
-                    headers = {'User-Agent': 'Mozilla/5.0'} if 'nominatim' not in url else {'User-Agent':'solar_app'}
+                    headers = {'User-Agent': 'Mozilla/5.0'} if 'nominatim' not in url else {'User-Agent':'solar-app/1.0 (contact@example.com)'}
                     resp = session.get(url, params=params, timeout=15, headers=headers)
                     if resp.status_code == 200:
                         self._update_log(f'✅ {name} reachable (status {resp.status_code})')
@@ -678,7 +665,7 @@ class MainScreen(BoxLayout):
             self._update_log('🏁 Network test finished.')
         threading.Thread(target=test, daemon=True).start()
 
-    # ---- Processing (unchanged) ----
+    # ---- 处理流程（未改动，但内部使用修复后的 session） ----
     def start_processing(self, instance):
         if self.is_running:
             self._update_log('⚠️ Already running.')
@@ -823,7 +810,7 @@ class MainScreen(BoxLayout):
             self._geocode_cache[addr] = (lat, lon, full)
         return lat, lon, full
 
-    # ---- Popups ----
+    # ---- 弹窗 ----
     def _show_error_popup(self, addr):
         popup = Popup(title='Collection Failed',
                       content=Label(text=f'All data sources failed for:\n{addr}\nCheck network or address.'),
@@ -841,7 +828,7 @@ class MainScreen(BoxLayout):
                       size_hint=(0.9, 0.6))
         popup.open()
 
-    # ---- Data storage & display ----
+    # ---- 数据存储与展示 ----
     def _store_data(self, addr, src_name, stats, data):
         if addr not in self.results:
             self.results[addr] = {}
@@ -865,7 +852,7 @@ class MainScreen(BoxLayout):
         total_height += 10 * len(self.chart_box.children)
         self.chart_box.height = max(total_height, 100)
 
-    # ---- Logging & Progress ----
+    # ---- 日志和进度 ----
     @mainthread
     def _update_log(self, msg):
         self.log_text.text += f'\n{msg}'
@@ -877,7 +864,7 @@ class MainScreen(BoxLayout):
         if self.total_tasks > 0:
             self.progress.value = min(100, int(self.completed / self.total_tasks * 100))
 
-    # ---- CSV Export (unchanged) ----
+    # ---- CSV 导出 ----
     def _export_csv(self):
         if not self.yearly:
             self._update_log('⚠️ No data to export')
@@ -911,9 +898,7 @@ class MainScreen(BoxLayout):
                 writer.writerows(records)
             self._update_log(f'✅ CSV exported: {filepath}')
             self._last_csv_path = filepath
-            if platform == 'android':
-                pass
-            else:
+            if platform != 'android':
                 popup = Popup(title='Export Complete',
                               content=Label(text=f'CSV saved to:\n{filepath}'),
                               size_hint=(0.8, 0.5))
@@ -921,7 +906,7 @@ class MainScreen(BoxLayout):
         except Exception as e:
             self._update_log(f'❌ Export failed: {e}')
 
-    # ---- Share Data (unchanged) ----
+    # ---- 分享数据 ----
     def share_data(self, instance):
         if not self.yearly:
             self._update_log('⚠️ No data to share, collect data first.')
@@ -935,12 +920,13 @@ class MainScreen(BoxLayout):
                 self._update_log('❌ CSV export failed, cannot share.')
                 return
 
+        # 截图图表
         try:
-            chart_box = self.chart_box
-            chart_box.do_layout()
+            # 强制布局刷新
+            self.chart_box.do_layout()
             import tempfile
             img_path = os.path.join(tempfile.gettempdir(), f'chart_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
-            chart_box.export_to_png(img_path)
+            self.chart_box.export_to_png(img_path)
             self._update_log(f'📸 Chart saved to {img_path}')
         except Exception as e:
             self._update_log(f'❌ Chart screenshot failed: {e}')
@@ -984,11 +970,13 @@ class MainScreen(BoxLayout):
                           size_hint=(0.8,0.5))
             popup.open()
 
-# -------- App Class --------
+# ==============================================================
+# ------------------- 应用程序类 -------------------------------
+# ==============================================================
 class SolarApp(App):
     def build(self):
         self._write_startup_log("App starting...")
-        # 字体加载
+        # 尝试加载系统字体
         font_dirs = ['/system/fonts/', '/system/fonts/fallback/']
         font_files = ['DroidSansFallback.ttf', 'NotoSansCJK-Regular.ttc', 'NotoSansSC-Regular.otf',
                       'NotoSansCJKsc-Regular.otf', 'NotoSansCJK.ttc', 'NotoSans-Regular.ttf']
@@ -1011,7 +999,7 @@ class SolarApp(App):
         if not font_loaded:
             self._write_startup_log("❌ All system fonts failed, using Kivy default")
 
-        # 权限
+        # Android 权限请求
         if platform == 'android':
             try:
                 from android.permissions import request_permissions, Permission
@@ -1028,6 +1016,7 @@ class SolarApp(App):
     def _write_startup_log(self, msg):
         try:
             log_path = os.path.join(self.user_data_dir, 'startup.log')
+            os.makedirs(self.user_data_dir, exist_ok=True)
             with open(log_path, 'a', encoding='utf-8') as f:
                 f.write(f"{datetime.now()}: {msg}\n")
         except:
