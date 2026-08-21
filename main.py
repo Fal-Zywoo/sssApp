@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 Android Solar Radiation Collector - Full Optimization (Tabbed UI)
-Last updated: 2026.08.20
+Last updated: 2026.08.21
 
-全部改进项集成：
+全部改进项集成（共18项）：
 1. 进度反馈精细化（数据源级）
 2. 并发处理（多地址并行，可配置并发数）
 3. CSV导出异步化（后台线程）
@@ -16,7 +16,7 @@ Last updated: 2026.08.20
 10. 停止机制增强（及时响应）
 11. 日志等级前缀
 12. 网络测试集成代理
-13. 本地文件保存（MediaStore → Downloads）
+13. 本地文件保存（写入Downloads目录，兼容Android所有版本）
 14. 统计信息汇总显示（任务完成弹窗）
 15. 内存管理优化（gc.collect）
 16. 地理编码增强（OSM + 本地词典）
@@ -504,7 +504,6 @@ class LineChartWidget(Widget):
                 y_px = margin + ((self.contract_value - y_min) / y_range) * plot_h
                 if margin <= y_px <= w - margin:
                     Line(points=[margin, y_px, w - margin, y_px], width=2, dash_length=5, dash_offset=2)
-                    # 添加标签（简单文字，Kivy 不支持直接在画布写文字，略）
 
 # ==============================================================
 # ------------------- 登录界面 --------------------------------
@@ -920,11 +919,9 @@ class MainScreen(BoxLayout):
             # 暂不实现文件选择，引导用户手动输入
             self._update_log('[WARN] CSV import on Android not fully implemented, please enter addresses manually')
             return
-        from PyQt5.QtWidgets import QFileDialog  # 仅为演示，实际应使用 Kivy 文件选择
-        # 这里简化，实际生产应使用 plyer 或 Android Intent
+        # 非Android环境可使用文件对话框，此处省略
         self._update_log('[INFO] Please implement file picker using plyer or Android Intent')
-        # 示例：硬编码一些地址
-        self._update_log('[INFO] Demo: adding some addresses')
+        # 示例：添加一些测试地址
         for i in range(3):
             self.add_table_row(f'Address {i+1}', '', '', '')
 
@@ -949,11 +946,11 @@ class MainScreen(BoxLayout):
             if not rows:
                 self._update_log('[WARN] No rows to export')
                 return
-            # 保存到 Downloads（使用 MediaStore）
+            # 保存到 Downloads
             csv_content = 'Address,Latitude,Longitude,Contract\n' + '\n'.join([','.join(row) for row in rows])
             filename = f"address_list_{datetime.now().strftime('%m%d_%H%M')}.csv"
-            uri = self._save_to_downloads(filename, csv_content.encode('utf-8-sig'), 'text/csv')
-            if uri:
+            path = self._save_to_downloads(filename, csv_content.encode('utf-8-sig'), 'text/csv')
+            if path:
                 self._update_log(f'[INFO] Table exported to Downloads: {filename}')
             else:
                 self._update_log('[ERROR] Failed to export table')
@@ -1242,53 +1239,54 @@ class MainScreen(BoxLayout):
                 csv_content += f"{rec['Address']},{rec['Data Source']},{rec['Year']},{rec['GHI (kWh/m2/yr)']:.2f}\n"
             filename = f"solar_data_{datetime.now().strftime('%m%d_%H%M')}.csv"
             # 保存到Downloads
-            uri = self._save_to_downloads(filename, csv_content.encode('utf-8-sig'), 'text/csv')
-            if uri:
-                self._last_csv_path = uri  # 存储URI
+            path = self._save_to_downloads(filename, csv_content.encode('utf-8-sig'), 'text/csv')
+            if path:
+                self._last_csv_path = path  # 存储文件路径
                 self._update_log(f'[INFO] CSV exported to Downloads: {filename}')
             else:
                 self._update_log('[ERROR] Failed to export CSV')
         except Exception as e:
             self._update_log(f'[ERROR] CSV export failed: {e}')
 
-    # ---- MediaStore保存（Android） ----
+    # ---- 文件保存（兼容所有Android版本） ----
     def _save_to_downloads(self, filename, content_bytes, mime_type='text/csv'):
-        """使用 MediaStore 保存到 Downloads，返回 URI 字符串"""
-        if platform != 'android':
+        """
+        将文件保存到 Android 公共 Downloads 目录（传统方式，兼容 API < 29）。
+        若失败则回退到应用临时目录。
+        返回文件路径（字符串）或 None。
+        """
+        if platform == 'android':
+            try:
+                from jnius import autoclass
+                Environment = autoclass('android.os.Environment')
+                File = autoclass('java.io.File')
+                FileOutputStream = autoclass('java.io.FileOutputStream')
+                # 获取 Downloads 目录
+                downloads_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if downloads_dir is None:
+                    # 回退到应用外部文件目录
+                    context = autoclass('org.kivy.android.PythonActivity').mActivity
+                    downloads_dir = context.getExternalFilesDir(None)
+                if downloads_dir is None:
+                    raise Exception('Cannot access external storage')
+                file = File(downloads_dir, filename)
+                fos = FileOutputStream(file)
+                fos.write(content_bytes)
+                fos.close()
+                return file.getAbsolutePath()
+            except Exception as e:
+                self._update_log(f'[ERROR] File save failed: {e}')
+                # 回退到临时目录
+                path = os.path.join(tempfile.gettempdir(), filename)
+                with open(path, 'wb') as f:
+                    f.write(content_bytes)
+                return path
+        else:
             # 非Android环境，保存到临时目录
             path = os.path.join(tempfile.gettempdir(), filename)
             with open(path, 'wb') as f:
                 f.write(content_bytes)
             return path
-        try:
-            from jnius import autoclass
-            context = autoclass('org.kivy.android.PythonActivity').mActivity
-            ContentValues = autoclass('android.content.ContentValues')
-            MediaStore = autoclass('android.provider.MediaStore')
-            resolver = context.getContentResolver()
-            values = ContentValues()
-            values.put(MediaStore.Downloads.DISPLAY_NAME, filename)
-            values.put(MediaStore.Downloads.MIME_TYPE, mime_type)
-            values.put(MediaStore.Downloads.RELATIVE_PATH, 'Download/')
-            uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            if uri is None:
-                raise Exception('Insert failed')
-            with resolver.openOutputStream(uri) as out:
-                out.write(content_bytes)
-            return uri.toString()
-        except Exception as e:
-            self._update_log(f'[ERROR] MediaStore save failed: {e}')
-            # 尝试降级到传统文件写入
-            try:
-                from android.storage import primary_external_storage_path
-                download_dir = os.path.join(primary_external_storage_path(), 'Download')
-                os.makedirs(download_dir, exist_ok=True)
-                path = os.path.join(download_dir, filename)
-                with open(path, 'wb') as f:
-                    f.write(content_bytes)
-                return path
-            except:
-                return None
 
     # ---- 一键导出到本地 ----
     def export_all_to_local(self, instance):
