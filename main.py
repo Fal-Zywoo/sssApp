@@ -3,25 +3,11 @@
 Android Solar Radiation Collector - Full Optimization (Tabbed UI)
 Last updated: 2026.08.21
 
-全部改进项集成（共18项）：
-1. 进度反馈精细化（数据源级）
-2. 并发处理（多地址并行，可配置并发数）
-3. CSV导出异步化（后台线程）
-4. API请求间隔控制（可配置）
-5. 代理配置UI（设置弹窗）
-6. 合同数据利用（图表基准线）
-7. 表格CSV导入/导出（实现load_csv/save_csv）
-8. 独立PNG图表保存（每个地址+数据源）
-9. 统一重试策略（可配置）
-10. 停止机制增强（及时响应）
-11. 日志等级前缀
-12. 网络测试集成代理
-13. 本地文件保存（写入Downloads目录，兼容Android所有版本）
-14. 统计信息汇总显示（任务完成弹窗）
-15. 内存管理优化（gc.collect）
-16. 地理编码增强（OSM + 本地词典）
-17. PVGIS TMY优化（tmy_hourly + 经验估算）
-18. 导出功能整合（一键导出到Downloads）
+2026.08.21 改进：
+- UI：移除Chart Type，参数改为三行，按钮分三行，尺寸加大
+- 移除所有非ASCII字符（Emoji等），避免方框
+- 图表布局紧凑
+- 新增Forecast标签页，按数据源预测未来10年
 """
 
 import requests
@@ -42,6 +28,7 @@ import gc
 import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
+import math
 
 # 禁用 urllib3 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -212,7 +199,7 @@ def get_coordinates(address, proxies=None, retries=3, delay=1.0):
     使用 requests 直接调用 Nominatim API，增加请求延迟、countrycodes限定，
     失败时尝试本地词典兜底。
     """
-    print(f"🗺️ Geocoding: {address}")
+    print(f"Geocoding: {address}")
     if address in _geocode_cache:
         return _geocode_cache[address]
 
@@ -404,11 +391,11 @@ def fetch_pvgis_tmy(lat, lon, start_year, end_year, proxies=None, retries=3, del
                 app.main_screen._update_log(f"[ERROR] PVGIS TMY error: {e}")
             time.sleep(2 ** attempt)
 
-    # ★★★ 最终兜底：经验估算
+    # 最终兜底：经验估算
     estimated_ghi = max(1000, 1800 - abs(lat) * 10)
     app = App.get_running_app()
     if app and hasattr(app, 'main_screen'):
-        app.main_screen._update_log(f"[WARN] PVGIS 接口不可用，使用经验估算值 {estimated_ghi:.0f} kWh/m2")
+        app.main_screen._update_log(f"[WARN] PVGIS API unavailable, using estimated value {estimated_ghi:.0f} kWh/m2")
     result = []
     for y in range(start_year, end_year + 1):
         result.append({'YEAR': y, 'GHI_kWh_m2_year': estimated_ghi})
@@ -443,14 +430,14 @@ def clear_caches():
 # -------------------- 绘图组件（支持合同线） -----------------
 # ==============================================================
 class LineChartWidget(Widget):
-    def __init__(self, x_values, y_values, title='', x_label='Year', y_label='GHI (kWh/m²)', contract_value=None, **kwargs):
+    def __init__(self, x_values, y_values, title='', x_label='Year', y_label='GHI (kWh/m2)', contract_value=None, **kwargs):
         super().__init__(**kwargs)
         self.x_values = x_values
         self.y_values = y_values
         self.title = title
         self.x_label = x_label
         self.y_label = y_label
-        self.contract_value = contract_value  # 新增
+        self.contract_value = contract_value
         self._last_size = (0, 0)
         self.bind(pos=self._on_update, size=self._on_update)
 
@@ -500,7 +487,6 @@ class LineChartWidget(Widget):
         if self.contract_value is not None:
             with self.canvas:
                 Color(1, 0, 0, 0.7)
-                # 计算 y 坐标
                 y_px = margin + ((self.contract_value - y_min) / y_range) * plot_h
                 if margin <= y_px <= w - margin:
                     Line(points=[margin, y_px, w - margin, y_px], width=2, dash_length=5, dash_offset=2)
@@ -571,14 +557,14 @@ class LoginScreen(BoxLayout):
         pwd = self.pass_input.text.strip()
         if server.lower() == 'local':
             if (user == 'admin' and pwd == '123456') or (user == 'test' and pwd == '123456'):
-                self.status_label.text = '✅ Local login successful'
+                self.status_label.text = '[OK] Local login successful'
                 self.app.token = 'fake_jwt_token'
                 self.app.server_url = 'local'
                 if self.remember_cb.active:
                     self._save_config()
                 self.app.show_main_screen()
             else:
-                self.status_label.text = '❌ Invalid account or password'
+                self.status_label.text = '[FAIL] Invalid account or password'
         else:
             try:
                 session = get_requests_session()
@@ -589,16 +575,16 @@ class LoginScreen(BoxLayout):
                     if token:
                         self.app.token = token
                         self.app.server_url = server
-                        self.status_label.text = '✅ Login successful'
+                        self.status_label.text = '[OK] Login successful'
                         if self.remember_cb.active:
                             self._save_config()
                         self.app.show_main_screen()
                     else:
-                        self.status_label.text = '❌ No token returned'
+                        self.status_label.text = '[FAIL] No token returned'
                 else:
-                    self.status_label.text = f'❌ Login failed ({resp.status_code})'
+                    self.status_label.text = f'[FAIL] Login failed ({resp.status_code})'
             except Exception as e:
-                self.status_label.text = f'❌ Connection error: {str(e)}'
+                self.status_label.text = f'[FAIL] Connection error: {str(e)}'
 
 # ==============================================================
 # ------------------- 设置弹窗 ---------------------------------
@@ -712,7 +698,7 @@ class DataWorker(threading.Thread):
                                  retries=retry_times, delay=request_delay)
                 if data is None:
                     self.main_screen._update_log(f"[ERROR] [{address}] {src_name} failed")
-                    self.main_screen._on_task_done()  # 更新进度
+                    self.main_screen._on_task_done()
                     continue
                 stats = compute_statistics(data)
                 if stats is None:
@@ -726,7 +712,7 @@ class DataWorker(threading.Thread):
                 ghi = [d['GHI_kWh_m2_year'] for d in data]
                 addr_charts.append((src_name, years, ghi, stats))
                 self.main_screen._update_log(f"[INFO] [{address}] {src_name} completed")
-                self.main_screen._on_task_done()  # 每个数据源完成
+                self.main_screen._on_task_done()
 
             if addr_charts:
                 # 绘制图表（主线程）
@@ -760,9 +746,9 @@ class MainScreen(BoxLayout):
         self.last_start = 2010
         self.last_end = 2025
         self._last_csv_path = None
-        self._last_chart_paths = []  # 存储独立图表路径
+        self._last_chart_paths = []
 
-        # 新增设置参数
+        # 设置参数
         self.max_workers = 2
         self.request_delay = 0.5
         self.retry_times = 3
@@ -780,26 +766,26 @@ class MainScreen(BoxLayout):
         self.tabs.default_tab_text = 'Data'
         self.tabs.tab_width = 120
 
-        # ---- Tab1: 数据 ----
-        tab_data = TabbedPanelHeader(text='📊 Data')
+        # ---- Tab1: Data ----
+        tab_data = TabbedPanelHeader(text='Data')
         data_content = BoxLayout(orientation='vertical', spacing=5, padding=5)
-        param_box = BoxLayout(orientation='vertical', size_hint_y=None, height=120, spacing=3)
-        row1 = BoxLayout(spacing=5)
-        row1.add_widget(Label(text='Start:', size_hint_x=0.2))
-        self.start_year = TextInput(text='2010', multiline=False, input_filter='int', size_hint_x=0.3)
+        # 参数输入区域：垂直三行
+        param_box = BoxLayout(orientation='vertical', size_hint_y=None, height=150, spacing=5)
+        # 第1行：Start Year
+        row1 = BoxLayout(size_hint_y=None, height=40, spacing=5)
+        row1.add_widget(Label(text='Start Year:', size_hint_x=0.3))
+        self.start_year = TextInput(text='2010', multiline=False, input_filter='int', size_hint_x=0.7, font_size='14sp')
         row1.add_widget(self.start_year)
-        row1.add_widget(Label(text='End:', size_hint_x=0.2))
-        self.end_year = TextInput(text='2025', multiline=False, input_filter='int', size_hint_x=0.3)
-        row1.add_widget(self.end_year)
         param_box.add_widget(row1)
-
-        row2 = BoxLayout(spacing=5)
-        row2.add_widget(Label(text='Chart Type:', size_hint_x=0.3))
-        self.chart_type = TextInput(text='line', multiline=False, size_hint_x=0.7)
-        row2.add_widget(self.chart_type)
-        row2.add_widget(Widget(size_hint_x=0.3))
-        row2.add_widget(Widget(size_hint_x=0.7))
+        # 第2行：End Year
+        row2 = BoxLayout(size_hint_y=None, height=40, spacing=5)
+        row2.add_widget(Label(text='End Year:', size_hint_x=0.3))
+        self.end_year = TextInput(text='2025', multiline=False, input_filter='int', size_hint_x=0.7, font_size='14sp')
+        row2.add_widget(self.end_year)
         param_box.add_widget(row2)
+        # 第3行留空或可放其它，但Chart Type已移除
+        row3 = BoxLayout(size_hint_y=None, height=40)
+        param_box.add_widget(row3)  # 占位保持布局
         data_content.add_widget(param_box)
 
         self.table_container = ScrollView(size_hint_y=0.3)
@@ -811,6 +797,7 @@ class MainScreen(BoxLayout):
         self.table_container.add_widget(self.table_grid)
         data_content.add_widget(self.table_container)
 
+        # 按钮区域：分三行
         btn_row1 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         add_btn = Button(text='Add Row')
         add_btn.bind(on_press=self.add_row)
@@ -818,18 +805,21 @@ class MainScreen(BoxLayout):
         del_btn.bind(on_press=self.del_row)
         clear_btn = Button(text='Clear All')
         clear_btn.bind(on_press=self.clear_all)
+        btn_row1.add_widget(add_btn)
+        btn_row1.add_widget(del_btn)
+        btn_row1.add_widget(clear_btn)
+        data_content.add_widget(btn_row1)
+
+        btn_row2 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         load_btn = Button(text='Import CSV')
         load_btn.bind(on_press=self.load_csv)
         save_btn = Button(text='Export CSV')
         save_btn.bind(on_press=self.save_csv)
-        btn_row1.add_widget(add_btn)
-        btn_row1.add_widget(del_btn)
-        btn_row1.add_widget(clear_btn)
-        btn_row1.add_widget(load_btn)
-        btn_row1.add_widget(save_btn)
-        data_content.add_widget(btn_row1)
+        btn_row2.add_widget(load_btn)
+        btn_row2.add_widget(save_btn)
+        data_content.add_widget(btn_row2)
 
-        btn_row2 = BoxLayout(size_hint_y=None, height=30, spacing=3)
+        btn_row3 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         self.start_btn = Button(text='Start', background_color=(0.2,0.7,0.2,1))
         self.start_btn.bind(on_press=self.start_processing)
         self.stop_btn = Button(text='Stop', background_color=(1,0.2,0.2,1))
@@ -838,17 +828,17 @@ class MainScreen(BoxLayout):
         self.retry_btn.bind(on_press=self.retry_all)
         self.test_btn = Button(text='Network Test', background_color=(0.3,0.5,0.8,1))
         self.test_btn.bind(on_press=self.network_test)
-        self.settings_btn = Button(text='⚙️ Settings', background_color=(0.5,0.5,0.5,1))
+        self.settings_btn = Button(text='Settings', background_color=(0.5,0.5,0.5,1))
         self.settings_btn.bind(on_press=self.open_settings)
-        self.export_local_btn = Button(text='📂 Export to Local', background_color=(0.2,0.6,0.8,1))
+        self.export_local_btn = Button(text='Export to Local', background_color=(0.2,0.6,0.8,1))
         self.export_local_btn.bind(on_press=self.export_all_to_local)
-        btn_row2.add_widget(self.start_btn)
-        btn_row2.add_widget(self.stop_btn)
-        btn_row2.add_widget(self.retry_btn)
-        btn_row2.add_widget(self.test_btn)
-        btn_row2.add_widget(self.settings_btn)
-        btn_row2.add_widget(self.export_local_btn)
-        data_content.add_widget(btn_row2)
+        btn_row3.add_widget(self.start_btn)
+        btn_row3.add_widget(self.stop_btn)
+        btn_row3.add_widget(self.retry_btn)
+        btn_row3.add_widget(self.test_btn)
+        btn_row3.add_widget(self.settings_btn)
+        btn_row3.add_widget(self.export_local_btn)
+        data_content.add_widget(btn_row3)
 
         self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=10)
         data_content.add_widget(self.progress)
@@ -856,8 +846,8 @@ class MainScreen(BoxLayout):
         tab_data.content = data_content
         self.tabs.add_widget(tab_data)
 
-        # ---- Tab2: 日志 ----
-        tab_log = TabbedPanelHeader(text='📝 Log')
+        # ---- Tab2: Log ----
+        tab_log = TabbedPanelHeader(text='Log')
         log_content = BoxLayout(orientation='vertical', spacing=2, padding=5)
         log_content.add_widget(Label(text='Log Output:', size_hint_y=None, height=20, font_size='12sp'))
         self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left', font_size='11sp')
@@ -870,8 +860,8 @@ class MainScreen(BoxLayout):
         tab_log.content = log_content
         self.tabs.add_widget(tab_log)
 
-        # ---- Tab3: 图表 ----
-        tab_chart = TabbedPanelHeader(text='📈 Charts')
+        # ---- Tab3: Charts ----
+        tab_chart = TabbedPanelHeader(text='Charts')
         chart_content = BoxLayout(orientation='vertical', spacing=5, padding=5)
         self.chart_container = ScrollView(bar_width=10, bar_color=[0.5,0.5,0.5,1])
         self.chart_box = BoxLayout(orientation='vertical', size_hint_y=None)
@@ -879,12 +869,29 @@ class MainScreen(BoxLayout):
         self.chart_container.add_widget(self.chart_box)
         chart_content.add_widget(self.chart_container)
 
-        share_btn = Button(text='📤 Share Data (CSV + Chart)', size_hint_y=None, height=50, background_color=(0.3,0.6,0.9,1))
+        share_btn = Button(text='Share Data (CSV + Chart)', size_hint_y=None, height=50, background_color=(0.3,0.6,0.9,1))
         share_btn.bind(on_press=self.share_data)
         chart_content.add_widget(share_btn)
 
         tab_chart.content = chart_content
         self.tabs.add_widget(tab_chart)
+
+        # ---- Tab4: Forecast ----
+        tab_forecast = TabbedPanelHeader(text='Forecast')
+        forecast_content = BoxLayout(orientation='vertical', spacing=5, padding=5)
+        # 生成按钮
+        gen_btn = Button(text='Generate Forecast (10 years)', size_hint_y=None, height=50)
+        gen_btn.bind(on_press=self.generate_forecast)
+        forecast_content.add_widget(gen_btn)
+        # 显示区域
+        self.forecast_container = ScrollView(bar_width=10, bar_color=[0.5,0.5,0.5,1])
+        self.forecast_box = BoxLayout(orientation='vertical', size_hint_y=None)
+        self.forecast_box.bind(minimum_height=self.forecast_box.setter('height'))
+        self.forecast_container.add_widget(self.forecast_box)
+        forecast_content.add_widget(self.forecast_container)
+
+        tab_forecast.content = forecast_content
+        self.tabs.add_widget(tab_forecast)
 
         self.add_widget(self.tabs)
         self._update_log(f'[INFO] Proxy env set: {self.proxies if self.proxies else "None"}')
@@ -914,19 +921,12 @@ class MainScreen(BoxLayout):
             self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True, font_size='12sp'))
 
     def load_csv(self, instance):
-        """实现导入CSV（地址列表）"""
-        if platform == 'android':
-            # 暂不实现文件选择，引导用户手动输入
-            self._update_log('[WARN] CSV import on Android not fully implemented, please enter addresses manually')
-            return
-        # 非Android环境可使用文件对话框，此处省略
-        self._update_log('[INFO] Please implement file picker using plyer or Android Intent')
-        # 示例：添加一些测试地址
+        self._update_log('[WARN] CSV import on Android not fully implemented, please enter addresses manually')
+        # 示例添加测试地址
         for i in range(3):
             self.add_table_row(f'Address {i+1}', '', '', '')
 
     def save_csv(self, instance):
-        """实现导出当前表格为CSV"""
         try:
             rows = []
             children = self.table_grid.children
@@ -946,7 +946,6 @@ class MainScreen(BoxLayout):
             if not rows:
                 self._update_log('[WARN] No rows to export')
                 return
-            # 保存到 Downloads
             csv_content = 'Address,Latitude,Longitude,Contract\n' + '\n'.join([','.join(row) for row in rows])
             filename = f"address_list_{datetime.now().strftime('%m%d_%H%M')}.csv"
             path = self._save_to_downloads(filename, csv_content.encode('utf-8-sig'), 'text/csv')
@@ -966,7 +965,6 @@ class MainScreen(BoxLayout):
         if self.is_running:
             self.stop_event.set()
             self._update_log('[INFO] Stop requested...')
-            # 清空队列
             while not self.task_queue.empty():
                 try:
                     self.task_queue.get_nowait()
@@ -1014,11 +1012,11 @@ class MainScreen(BoxLayout):
                     headers = {'User-Agent': user_agent} if 'nominatim' in name.lower() else {'User-Agent': 'Mozilla/5.0'}
                     resp = session.get(url, params=params, timeout=15, headers=headers)
                     if resp.status_code == 200:
-                        self._update_log(f'[INFO] ✅ {name} reachable (status {resp.status_code})')
+                        self._update_log(f'[INFO] [OK] {name} reachable (status {resp.status_code})')
                     else:
-                        self._update_log(f'[ERROR] ❌ {name} returned {resp.status_code}')
+                        self._update_log(f'[ERROR] [FAIL] {name} returned {resp.status_code}')
                 except Exception as e:
-                    self._update_log(f'[ERROR] ❌ {name} error: {str(e)}')
+                    self._update_log(f'[ERROR] [FAIL] {name} error: {str(e)}')
             self._update_log('[INFO] Network test finished.')
         threading.Thread(target=test, daemon=True).start()
 
@@ -1096,11 +1094,10 @@ class MainScreen(BoxLayout):
         self.chart_box.clear_widgets()
         self._last_chart_paths.clear()
         self.completed = 0
-        self.total_tasks = len(rows) * 3  # 每个地址3个数据源
+        self.total_tasks = len(rows) * 3
         self.progress.value = 0
         self._update_log(f'[INFO] Processing {len(rows)} address(es) from {start} to {end} with max_workers={self.max_workers}')
 
-        # 填充任务队列
         self.task_queue = queue.Queue()
         for addr, lat, lon, contract in rows:
             if lat is None or lon is None:
@@ -1110,27 +1107,22 @@ class MainScreen(BoxLayout):
                     continue
             self.task_queue.put((addr, lat, lon, contract, start, end, self.proxies, self.request_delay, self.retry_times))
 
-        # 启动工作线程
         self.worker_threads = []
         for _ in range(min(self.max_workers, self.task_queue.qsize())):
             worker = DataWorker(self.task_queue, self.stop_event, self)
             worker.start()
             self.worker_threads.append(worker)
 
-        # 启动监控线程（等待任务完成）
         threading.Thread(target=self._monitor_workers, daemon=True).start()
 
         self.start_btn.disabled = True
         self.stop_btn.disabled = False
 
     def _monitor_workers(self):
-        # 等待队列清空
         self.task_queue.join()
-        # 如果未被停止，则等待所有线程结束
         if not self.stop_event.is_set():
             for w in self.worker_threads:
                 w.join()
-        # 结束处理
         Clock.schedule_once(lambda dt: self.finish_processing(), 0)
 
     def finish_processing(self):
@@ -1144,14 +1136,10 @@ class MainScreen(BoxLayout):
             self._show_no_data_popup()
             return
 
-        # 生成CSV（异步）
         self._update_log('[INFO] Generating CSV asynchronously...')
         threading.Thread(target=self._export_csv_async, daemon=True).start()
 
-        # 显示统计汇总
         self._show_statistics_popup()
-
-        # 内存清理
         gc.collect()
 
     # ---- 进度和日志（主线程安全） ----
@@ -1180,33 +1168,28 @@ class MainScreen(BoxLayout):
 
     # ---- 图表显示（含合同线） ----
     def _display_charts(self, addr, charts, contract_value=None):
-        title_label = Label(text=f'📍 {addr}', size_hint_y=None, height=35, bold=True, font_size='14sp')
+        title_label = Label(text=f'Address: {addr}', size_hint_y=None, height=30, bold=True, font_size='14sp')
         self.chart_box.add_widget(title_label)
         for src_name, years, ghi, stats in charts:
-            src_label = Label(text=f'📊 {src_name}', size_hint_y=None, height=25, font_size='12sp')
+            src_label = Label(text=f'Source: {src_name}', size_hint_y=None, height=20, font_size='12sp')
             self.chart_box.add_widget(src_label)
             chart_widget = LineChartWidget(x_values=years, y_values=ghi,
                                            contract_value=contract_value,
-                                           size_hint_y=None, height=180)
+                                           size_hint_y=None, height=150)
             self.chart_box.add_widget(chart_widget)
             info = (f"Avg: {stats['avg']:.1f}   Max: {stats['max']:.1f}   Min: {stats['min']:.1f}   "
                     f"Stability: {stats['stability']:.1f}%   Years: {stats['years']}")
-            info_label = Label(text=info, size_hint_y=None, height=20, font_size='11sp')
+            info_label = Label(text=info, size_hint_y=None, height=18, font_size='11sp')
             self.chart_box.add_widget(info_label)
-        # 更新高度
         total_height = sum(child.height for child in self.chart_box.children if hasattr(child, 'height'))
-        total_height += 10 * len(self.chart_box.children)
+        total_height += 5 * len(self.chart_box.children)
         self.chart_box.height = max(total_height, 100)
 
     # ---- 独立PNG保存 ----
     def _save_independent_charts(self, addr, charts):
-        """每个地址+数据源保存为独立PNG"""
         for src_name, years, ghi, stats in charts:
-            # 创建临时图表控件，绘制并保存
             widget = LineChartWidget(x_values=years, y_values=ghi, size=(600, 400))
-            # 强制布局和绘制
             widget._on_update()
-            # 保存到临时目录
             safe_addr = re.sub(r'[\\/*?:"<>|]', '_', addr)
             filename = f"{safe_addr}_{src_name}.png"
             temp_dir = os.path.join(tempfile.gettempdir(), 'solar_charts')
@@ -1238,10 +1221,9 @@ class MainScreen(BoxLayout):
             for rec in records:
                 csv_content += f"{rec['Address']},{rec['Data Source']},{rec['Year']},{rec['GHI (kWh/m2/yr)']:.2f}\n"
             filename = f"solar_data_{datetime.now().strftime('%m%d_%H%M')}.csv"
-            # 保存到Downloads
             path = self._save_to_downloads(filename, csv_content.encode('utf-8-sig'), 'text/csv')
             if path:
-                self._last_csv_path = path  # 存储文件路径
+                self._last_csv_path = path
                 self._update_log(f'[INFO] CSV exported to Downloads: {filename}')
             else:
                 self._update_log('[ERROR] Failed to export CSV')
@@ -1250,12 +1232,7 @@ class MainScreen(BoxLayout):
 
     # ---- 文件保存（兼容所有Android版本） ----
     def _save_to_downloads(self, filename, content_bytes, mime_type='text/csv'):
-        """
-        保存到Downloads，优先使用传统公共目录，失败时回退到私有目录。
-        返回绝对路径（字符串），并确保路径可被用户找到。
-        """
         try:
-            # 1. 尝试直接获取 Downloads 公共目录（适用于 API < 29）
             from jnius import autoclass
             Environment = autoclass('android.os.Environment')
             File = autoclass('java.io.File')
@@ -1269,9 +1246,7 @@ class MainScreen(BoxLayout):
                 fos.close()
                 return file.getAbsolutePath()
             else:
-                # 2. 回退到应用外部文件目录（但会放在 Android/data 下，建议同时复制一份到 Downloads 如果可写）
                 context = autoclass('org.kivy.android.PythonActivity').mActivity
-                # 尝试使用 MediaStore（API 29+）
                 try:
                     ContentValues = autoclass('android.content.ContentValues')
                     MediaStore = autoclass('android.provider.MediaStore')
@@ -1284,16 +1259,13 @@ class MainScreen(BoxLayout):
                     if uri is not None:
                         with resolver.openOutputStream(uri) as out:
                             out.write(content_bytes)
-                        # 通过 URI 解析实际路径（可能为 null），返回 URI 字符串但用户不易找
-                        # 我们返回一个可读路径提示
                         return "MediaStore:" + uri.toString()
                 except Exception as e:
                     self._update_log(f'[WARN] MediaStore fallback failed: {e}')
                 
-                # 3. 最后回退到私有目录（但会放在外部存储的 Android/data 下）
                 fallback_dir = context.getExternalFilesDir(None)
                 if fallback_dir is None:
-                    fallback_dir = context.getFilesDir()  # 内部私有，更不好找
+                    fallback_dir = context.getFilesDir()
                 file = File(fallback_dir, filename)
                 fos = FileOutputStream(file)
                 fos.write(content_bytes)
@@ -1301,7 +1273,6 @@ class MainScreen(BoxLayout):
                 return file.getAbsolutePath()
         except Exception as e:
             self._update_log(f'[ERROR] All save attempts failed: {e}')
-            # 终极回退：写入临时目录（用户更难找，但可避免崩溃）
             path = os.path.join(tempfile.gettempdir(), filename)
             with open(path, 'wb') as f:
                 f.write(content_bytes)
@@ -1327,9 +1298,9 @@ class MainScreen(BoxLayout):
             self._update_log('[WARN] No files to export.')
             return
 
-        msg = "✅ Files saved to:\n\n"
+        msg = "[OK] Files saved to:\n\n"
         for f in file_paths:
-            msg += f"• {f}\n"
+            msg += f"  {f}\n"
         msg += "\nLook for them in your phone's 'Download' folder or the path shown above."
         popup = Popup(title='Export Complete', content=Label(text=msg), size_hint=(0.9, 0.6))
         popup.open()
@@ -1353,19 +1324,18 @@ class MainScreen(BoxLayout):
         popup.open()
 
     def _show_statistics_popup(self):
-        """显示统计汇总"""
         if not self.results:
             return
-        text = "📊 Statistics Summary:\n\n"
+        text = "Statistics Summary:\n\n"
         for addr, sources in self.results.items():
-            text += f"📍 {addr}\n"
+            text += f"Address: {addr}\n"
             for src, stats in sources.items():
                 text += f"  {src}: Avg={stats['avg']:.1f}, Max={stats['max']:.1f}, Min={stats['min']:.1f}, Stability={stats['stability']:.1f}%\n"
             text += "\n"
         popup = Popup(title='Statistics', content=Label(text=text, halign='left', valign='top'), size_hint=(0.9, 0.7))
         popup.open()
 
-    # ---- 分享数据（保留原有功能） ----
+    # ---- 分享数据 ----
     def share_data(self, instance):
         if not self.yearly:
             self._update_log('[WARN] No data to share, collect data first.')
@@ -1373,7 +1343,6 @@ class MainScreen(BoxLayout):
             popup.open()
             return
 
-        # 生成图表截图
         try:
             self.chart_box.do_layout()
             img_path = os.path.join(tempfile.gettempdir(), f'chart_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
@@ -1394,12 +1363,10 @@ class MainScreen(BoxLayout):
                 context = PythonActivity.mActivity
 
                 uris = ArrayList()
-                # CSV
                 if hasattr(self, '_last_csv_path') and self._last_csv_path:
                     csv_file = File(self._last_csv_path)
                     csv_uri = Uri.fromFile(csv_file)
                     uris.add(csv_uri)
-                # 截图
                 png_file = File(img_path)
                 png_uri = Uri.fromFile(png_file)
                 uris.add(png_uri)
@@ -1420,6 +1387,107 @@ class MainScreen(BoxLayout):
                           size_hint=(0.8,0.5))
             popup.open()
 
+    # ==============================================================
+    # ---------------- Forecast (预测) 功能 -------------------------
+    # ==============================================================
+    def generate_forecast(self, instance):
+        """基于已有历史数据，生成未来10年预测（按数据源）"""
+        if not self.results:
+            self._update_log('[WARN] No historical data. Please collect data first.')
+            popup = Popup(title='No Data', content=Label(text='Please collect data first.'), size_hint=(0.8,0.4))
+            popup.open()
+            return
+
+        # 清空之前预测显示
+        self.forecast_box.clear_widgets()
+
+        # 确定历史最后一年：从所有数据中取最大年份
+        max_hist_year = 0
+        for addr, sources in self.yearly.items():
+            for src, data_list in sources.items():
+                if data_list:
+                    years = [d['YEAR'] for d in data_list]
+                    if years:
+                        max_hist_year = max(max_hist_year, max(years))
+        if max_hist_year == 0:
+            self._update_log('[ERROR] Could not determine historical last year.')
+            return
+
+        forecast_start_year = max_hist_year + 1
+        forecast_years = list(range(forecast_start_year, forecast_start_year + 10))
+        self._update_log(f'[INFO] Generating forecast from {forecast_start_year} to {forecast_start_year+9}')
+
+        # 遍历每个地址和数据源
+        for addr, sources in self.results.items():
+            for src_name, stats in sources.items():
+                avg_val = stats['avg']
+                max_val = stats['max']
+                # 计算 diff = max - avg，如果大于200则截断
+                diff = max_val - avg_val
+                if diff > 200:
+                    diff = 200
+                # 计算 Rx
+                if (max_val + avg_val) != 0:
+                    Rx = (diff * 2 / (max_val + avg_val)) + 1
+                else:
+                    Rx = 1.0
+                # 基准值 Z
+                Z = (avg_val + max_val) / 2
+
+                # 定义五段随机区间
+                intervals = [
+                    (1.1, 1.3),
+                    (1.2, 1.3),
+                    (1.2, 1.4),
+                    (1.3, 1.4),
+                    (1.4, 1.5)
+                ]
+                # 为每段生成两个随机数（对应两年）
+                R_list = []
+                for i in range(5):
+                    low, high = intervals[i]
+                    r1 = round(random.uniform(low, high), 2)
+                    r2 = round(random.uniform(low, high), 2)
+                    R_list.extend([r1, r2])  # 共10个
+
+                # 生成预测值
+                pred_values = []
+                for i, yr in enumerate(forecast_years):
+                    val = Z * R_list[i] * Rx
+                    pred_values.append(val)
+
+                # 显示结果：先显示地址+数据源标题
+                title_text = f"Address: {addr}  |  Source: {src_name}"
+                title_label = Label(text=title_text, size_hint_y=None, height=30, bold=True, font_size='14sp')
+                self.forecast_box.add_widget(title_label)
+
+                # 表格：显示年份和预测值
+                table_grid = GridLayout(cols=2, size_hint_y=None, spacing=2, row_default_height=25)
+                table_grid.bind(minimum_height=table_grid.setter('height'))
+                # 表头
+                table_grid.add_widget(Label(text='Year', bold=True, size_hint_x=0.5))
+                table_grid.add_widget(Label(text='GHI (kWh/m2)', bold=True, size_hint_x=0.5))
+                for yr, val in zip(forecast_years, pred_values):
+                    table_grid.add_widget(Label(text=str(yr), size_hint_x=0.5))
+                    table_grid.add_widget(Label(text=f'{val:.2f}', size_hint_x=0.5))
+                self.forecast_box.add_widget(table_grid)
+
+                # 图表
+                chart_widget = LineChartWidget(x_values=forecast_years, y_values=pred_values,
+                                               title='Forecast', x_label='Year', y_label='GHI (kWh/m2)',
+                                               contract_value=None, size_hint_y=None, height=150)
+                self.forecast_box.add_widget(chart_widget)
+
+                # 添加分隔线（仅视觉）
+                sep = Widget(size_hint_y=None, height=10)
+                self.forecast_box.add_widget(sep)
+
+        # 更新滚动容器高度
+        total_h = sum(child.height for child in self.forecast_box.children if hasattr(child, 'height'))
+        total_h += 10 * len(self.forecast_box.children)
+        self.forecast_box.height = max(total_h, 200)
+        self._update_log('[INFO] Forecast generation completed.')
+
 # ==============================================================
 # ------------------- 应用程序类 -------------------------------
 # ==============================================================
@@ -1438,16 +1506,16 @@ class SolarApp(App):
                     try:
                         LabelBase.register(name='SystemFont', fn_regular=full_path)
                         Config.set('kivy', 'default_font', ['SystemFont'])
-                        self._write_startup_log(f"✅ System font loaded: {full_path}")
+                        self._write_startup_log(f"[OK] System font loaded: {full_path}")
                         font_loaded = True
                         break
                     except Exception as e:
-                        self._write_startup_log(f"⚠️ Registering {full_path} failed: {e}")
+                        self._write_startup_log(f"[WARN] Registering {full_path} failed: {e}")
                         continue
             if font_loaded:
                 break
         if not font_loaded:
-            self._write_startup_log("❌ All system fonts failed, using Kivy default")
+            self._write_startup_log("[WARN] All system fonts failed, using Kivy default")
 
         # Android 权限请求
         if platform == 'android':
