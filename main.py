@@ -2,7 +2,7 @@
 """
 Android Solar Radiation Collector - Full Optimization (Tabbed UI)
 Last updated: 2026.08.21
-最终版本 - 所有改进项已集成，Forecast 表格行高增大，易读性提升。
+最终版本 - 修复图表间距、随机数优化
 """
 
 import requests
@@ -67,7 +67,6 @@ def get_requests_session(proxies=None):
     return session
 
 _DEFAULT_SESSION = None
-
 def get_default_session():
     global _DEFAULT_SESSION
     if _DEFAULT_SESSION is None:
@@ -415,7 +414,7 @@ class LineChartWidget(Widget):
         if not self.x_values or not self.y_values:
             return
         w, h = self.width, self.height
-        margin = 30
+        margin = 40  # 图表边距，调整此值可改变曲线与控件边缘的距离
         plot_w = w - 2 * margin
         plot_h = h - 2 * margin
         if plot_w <= 0 or plot_h <= 0:
@@ -804,7 +803,7 @@ class MainScreen(BoxLayout):
         tab_log = TabbedPanelHeader(text='Log')
         log_content = BoxLayout(orientation='vertical', spacing=2, padding=5)
         log_content.add_widget(Label(text='Log Output:', size_hint_y=None, height=20, font_size='12sp'))
-        log_content.add_widget(Widget(size_hint_y=None, height=20))  # 上方空隙
+        log_content.add_widget(Widget(size_hint_y=None, height=20))
         self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left', font_size='11sp')
         log_scroll = ScrollView(bar_width=10, bar_color=[0.5,0.5,0.5,1])
         log_scroll.add_widget(self.log_text)
@@ -1118,7 +1117,7 @@ class MainScreen(BoxLayout):
         self.results[address][src_name] = stats
         self.yearly[address][src_name] = data
 
-    # ---- 图表显示 ----
+    # ---- 图表显示 (统计信息移至图表上方，解决空白问题) ----
     def _display_charts(self, addr, charts, contract_value=None):
         title_label = Label(text=f'Address: {addr}', size_hint_y=None, height=30, bold=True, font_size='14sp')
         self.chart_box.add_widget(title_label)
@@ -1128,14 +1127,16 @@ class MainScreen(BoxLayout):
         for idx, (src_name, years, ghi, stats) in enumerate(charts):
             src_label = Label(text=f'Source: {src_name}', size_hint_y=None, height=20, font_size='12sp', bold=True)
             self.chart_box.add_widget(src_label)
-            chart_widget = LineChartWidget(x_values=years, y_values=ghi,
-                                           contract_value=contract_value,
-                                           size_hint_y=None, height=650)
-            self.chart_box.add_widget(chart_widget)
+            # 统计信息移到图表上方，紧跟在 Source 之后
             info = (f"Avg: {stats['avg']:.1f}   Max: {stats['max']:.1f}   Min: {stats['min']:.1f}   "
                     f"Stability: {stats['stability']:.1f}%   Years: {stats['years']}")
             info_label = Label(text=info, size_hint_y=None, height=18, font_size='11sp')
             self.chart_box.add_widget(info_label)
+            # 图表放在统计信息之后
+            chart_widget = LineChartWidget(x_values=years, y_values=ghi,
+                                           contract_value=contract_value,
+                                           size_hint_y=None, height=650)
+            self.chart_box.add_widget(chart_widget)
             if idx < len(charts) - 1:
                 sep = Widget(size_hint_y=None, height=5)
                 self.chart_box.add_widget(sep)
@@ -1349,7 +1350,7 @@ class MainScreen(BoxLayout):
                           size_hint=(0.8,0.5))
             popup.open()
 
-    # ---- Forecast 预测 (表格行高增大，字体放大) ----
+    # ---- Forecast 预测 ----
     def generate_forecast(self, instance):
         if not self.results:
             self._update_log('[WARN] No historical data. Please collect data first.')
@@ -1395,10 +1396,15 @@ class MainScreen(BoxLayout):
                     Rx = 1.0
                 Z = (avg_val + max_val) / 2
 
+                # 生成10个R值，每段两个，保留4位小数，且同一段内两个数不相等
                 R_list = []
                 for low, high in intervals:
                     r1 = round(random.uniform(low, high), 4)
-                    r2 = round(random.uniform(low, high), 4)
+                    # 生成第二个数，与r1不同
+                    while True:
+                        r2 = round(random.uniform(low, high), 4)
+                        if r2 != r1:
+                            break
                     R_list.extend([r1, r2])
 
                 pred_values = []
@@ -1410,7 +1416,6 @@ class MainScreen(BoxLayout):
                 title_label = Label(text=title_text, size_hint_y=None, height=21, bold=True, font_size='12sp')
                 self.forecast_box.add_widget(title_label)
 
-                # 表格行高增大至30，字体12sp
                 table_grid = GridLayout(cols=2, size_hint_y=None, spacing=2, row_default_height=30)
                 table_grid.bind(minimum_height=table_grid.setter('height'))
                 table_grid.add_widget(Label(text='Year', bold=True, size_hint_x=0.5, font_size='12sp'))
@@ -1420,7 +1425,6 @@ class MainScreen(BoxLayout):
                     table_grid.add_widget(Label(text=f'{val:.2f}', size_hint_x=0.5, font_size='12sp'))
                 self.forecast_box.add_widget(table_grid)
 
-                # 图表高度保持525（已增大5倍）
                 chart_widget = LineChartWidget(x_values=forecast_years, y_values=pred_values,
                                                title='Forecast', x_label='Year', y_label='GHI',
                                                contract_value=None, size_hint_y=None, height=525)
