@@ -3,11 +3,13 @@
 Android Solar Radiation Collector - Full Optimization (Tabbed UI)
 Last updated: 2026.08.21
 
-2026.08.21 改进：
-- UI：移除Chart Type，参数改为三行，按钮分三行，尺寸加大
-- 移除所有非ASCII字符（Emoji等），避免方框
-- 图表布局紧凑
-- 新增Forecast标签页，按数据源预测未来10年
+改进项集成（共18项）+ 额外UI优化：
+- 输入框高度加倍，表格行高翻倍
+- 按钮分为四行，第四行包含 Network Test, Settings, Export to Local
+- 图表布局进一步紧凑，减少遮挡
+- Forecast 界面字符高度减少30%，并优化间距
+- Tab 按钮宽度翻倍
+- 预测系数 R 区间调整为 1.01~1.02, 1.02~1.03, ... 1.05~1.06
 """
 
 import requests
@@ -35,10 +37,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ---------- 自定义 SSL 上下文（修复 check_hostname 冲突） ----------
 def create_ssl_context():
-    """
-    创建兼容性更好的 SSL 上下文，允许 TLSv1.0+ 和常见加密套件，
-    并显式禁用证书验证与主机名检查，避免 'CERT_NONE with check_hostname' 错误。
-    """
     try:
         context = ssl.create_default_context()
         context.minimum_version = ssl.TLSVersion.TLSv1
@@ -49,7 +47,6 @@ def create_ssl_context():
     except AttributeError:
         return ssl._create_unverified_context()
 
-# ---------- 自定义 HTTPAdapter 注入 SSL 上下文 ----------
 class CustomHTTPAdapter(requests.adapters.HTTPAdapter):
     def __init__(self, ssl_context=None, *args, **kwargs):
         self.ssl_context = ssl_context or create_ssl_context()
@@ -63,11 +60,7 @@ class CustomHTTPAdapter(requests.adapters.HTTPAdapter):
         kwargs['ssl_context'] = self.ssl_context
         return super().proxy_manager_for(*args, **kwargs)
 
-# ---------- 全局 Session（带重试和自定义适配器） ----------
 def get_requests_session(proxies=None):
-    """
-    返回配置好的 requests Session，使用自定义 SSL 适配器并设置重试策略。
-    """
     session = requests.Session()
     retry = urllib3.Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
     adapter = CustomHTTPAdapter(max_retries=retry)
@@ -80,7 +73,6 @@ def get_requests_session(proxies=None):
         session.proxies.update(proxies)
     return session
 
-# ---------- 全局 Session 单例 ----------
 _DEFAULT_SESSION = None
 
 def get_default_session():
@@ -89,7 +81,6 @@ def get_default_session():
         _DEFAULT_SESSION = get_requests_session()
     return _DEFAULT_SESSION
 
-# ---------- 全局异常处理 ----------
 def global_exception_handler(exc_type, exc_value, exc_tb):
     error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
     try:
@@ -169,7 +160,7 @@ def set_proxy_env(proxies):
             os.environ['HTTPS_PROXY'] = proxies['https']
             os.environ['https_proxy'] = proxies['https']
 
-# ---------- 地理编码增强（OSM + 本地词典） ----------
+# ---------- 地理编码 ----------
 _geocode_cache = {}
 _LOCAL_COORD_DICT = {
     "上海": (31.2304, 121.4737),
@@ -195,21 +186,14 @@ _LOCAL_COORD_DICT = {
 }
 
 def get_coordinates(address, proxies=None, retries=3, delay=1.0):
-    """
-    使用 requests 直接调用 Nominatim API，增加请求延迟、countrycodes限定，
-    失败时尝试本地词典兜底。
-    """
     print(f"Geocoding: {address}")
     if address in _geocode_cache:
         return _geocode_cache[address]
-
-    # 尝试从本地词典中匹配
     for city, (lat, lon) in _LOCAL_COORD_DICT.items():
         if city in address:
             result = (lat, lon, address)
             _geocode_cache[address] = result
             return result
-
     user_agent = "SolarCollectorApp/1.0 (zhongyw@jetion.com.cn)"
     url = "https://nominatim.openstreetmap.org/search"
     params = {
@@ -217,7 +201,7 @@ def get_coordinates(address, proxies=None, retries=3, delay=1.0):
         "format": "json",
         "limit": 1,
         "addressdetails": 1,
-        "countrycodes": "cn",  # 限制中国区域
+        "countrycodes": "cn",
         "accept-language": "zh,en"
     }
     headers = {
@@ -225,11 +209,9 @@ def get_coordinates(address, proxies=None, retries=3, delay=1.0):
         "Accept": "application/json",
         "Accept-Language": "en-US,en;q=0.9,zh;q=0.8",
     }
-
     session = get_requests_session(proxies)
     for attempt in range(retries):
         try:
-            # 请求前延迟
             time.sleep(delay)
             resp = session.get(url, params=params, headers=headers, timeout=20)
             if resp.status_code == 200:
@@ -254,9 +236,8 @@ def get_coordinates(address, proxies=None, retries=3, delay=1.0):
             time.sleep(2 ** attempt)
     return None, None, None
 
-# ---------- API 数据获取（增强：间隔、重试、超时） ----------
+# ---------- API 数据获取 ----------
 def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3, delay=0.5):
-    """获取 Open-Meteo 数据，带请求间隔"""
     time.sleep(delay)
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
@@ -299,7 +280,6 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
     return None
 
 def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3, delay=0.5):
-    """获取 NASA POWER 数据，带请求间隔"""
     time.sleep(delay)
     url = "https://power.larc.nasa.gov/api/temporal/daily/point"
     params = {
@@ -337,10 +317,6 @@ def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3, del
     return None
 
 def fetch_pvgis_tmy(lat, lon, start_year, end_year, proxies=None, retries=3, delay=0.5):
-    """
-    从 PVGIS 获取 TMY 数据，优先使用 tmy_hourly 求和，
-    失败时使用经验估算（永不返回 None）。
-    """
     time.sleep(delay)
     session = get_requests_session(proxies)
     tmy_url = "https://re.jrc.ec.europa.eu/api/v5_2/tmy"
@@ -357,21 +333,18 @@ def fetch_pvgis_tmy(lat, lon, start_year, end_year, proxies=None, retries=3, del
             if resp.status_code == 200:
                 data = resp.json()
                 outputs = data.get('outputs', {})
-                # 优先从 hourly 数据求和
                 hourly_list = outputs.get('tmy_hourly', [])
                 if hourly_list and len(hourly_list) > 0:
                     total_wh = sum([h.get('G(h)', 0) for h in hourly_list])
                     annual_ghi = total_wh / 1000.0
                 else:
-                    # 回退到 monthly
                     monthly = outputs.get('monthly', {})
                     ghi_monthly = monthly.get('G(h)', [])
                     if len(ghi_monthly) == 12:
                         annual_ghi = sum(ghi_monthly)
                     else:
-                        continue  # 重试
-                # 生成逐年数据（年际波动 ±5%）
-                random.seed(42 + int(lat*1000))  # 固定种子保证可复现
+                        continue
+                random.seed(42 + int(lat*1000))
                 result = []
                 for y in range(start_year, end_year + 1):
                     variation = random.uniform(0.95, 1.05)
@@ -391,7 +364,6 @@ def fetch_pvgis_tmy(lat, lon, start_year, end_year, proxies=None, retries=3, del
                 app.main_screen._update_log(f"[ERROR] PVGIS TMY error: {e}")
             time.sleep(2 ** attempt)
 
-    # 最终兜底：经验估算
     estimated_ghi = max(1000, 1800 - abs(lat) * 10)
     app = App.get_running_app()
     if app and hasattr(app, 'main_screen'):
@@ -402,7 +374,6 @@ def fetch_pvgis_tmy(lat, lon, start_year, end_year, proxies=None, retries=3, del
     return result
 
 def fetch_pvgis_data(lat, lon, start_year, end_year, proxies=None, retries=3, delay=0.5):
-    """直接使用 PVGIS TMY 增强版"""
     return fetch_pvgis_tmy(lat, lon, start_year, end_year, proxies, retries, delay)
 
 # ---------- 统计计算 ----------
@@ -420,14 +391,13 @@ def compute_statistics(data_list):
         'years': len(vals)
     }
 
-# ---------- 内存管理辅助 ----------
 def clear_caches():
     global _geocode_cache
     _geocode_cache.clear()
     gc.collect()
 
 # ==============================================================
-# -------------------- 绘图组件（支持合同线） -----------------
+# -------------------- 绘图组件 --------------------------------
 # ==============================================================
 class LineChartWidget(Widget):
     def __init__(self, x_values, y_values, title='', x_label='Year', y_label='GHI (kWh/m2)', contract_value=None, **kwargs):
@@ -483,7 +453,6 @@ class LineChartWidget(Widget):
                 Color(1, 0, 0, 1)
                 Line(circle=(points[i], points[i+1], 5), width=2)
 
-        # 绘制合同基准线
         if self.contract_value is not None:
             with self.canvas:
                 Color(1, 0, 0, 0.7)
@@ -595,28 +564,24 @@ class SettingsPopup(Popup):
         self.main_screen = main_screen
         layout = BoxLayout(orientation='vertical', spacing=10, padding=10)
 
-        # 并发数
         hbox1 = BoxLayout(spacing=5)
         hbox1.add_widget(Label(text='Max Concurrent Addresses:', size_hint_x=0.5))
         self.concurrent_spin = Spinner(text=str(main_screen.max_workers), values=[str(i) for i in range(1, 11)])
         hbox1.add_widget(self.concurrent_spin)
         layout.add_widget(hbox1)
 
-        # 请求延迟
         hbox2 = BoxLayout(spacing=5)
         hbox2.add_widget(Label(text='Request Delay (sec):', size_hint_x=0.5))
         self.delay_input = TextInput(text=str(main_screen.request_delay), multiline=False, input_filter='float')
         hbox2.add_widget(self.delay_input)
         layout.add_widget(hbox2)
 
-        # 重试次数
         hbox3 = BoxLayout(spacing=5)
         hbox3.add_widget(Label(text='Retry Times:', size_hint_x=0.5))
         self.retry_spin = Spinner(text=str(main_screen.retry_times), values=[str(i) for i in range(1, 6)])
         hbox3.add_widget(self.retry_spin)
         layout.add_widget(hbox3)
 
-        # 代理配置
         hbox4 = BoxLayout(spacing=5)
         self.proxy_check = CheckBox(active=main_screen.proxy_enabled)
         hbox4.add_widget(self.proxy_check)
@@ -629,7 +594,6 @@ class SettingsPopup(Popup):
         hbox4.add_widget(self.proxy_port)
         layout.add_widget(hbox4)
 
-        # 按钮
         btn_box = BoxLayout(size_hint_y=None, height=50, spacing=10)
         save_btn = Button(text='Save')
         save_btn.bind(on_press=self.save_settings)
@@ -705,9 +669,7 @@ class DataWorker(threading.Thread):
                     self.main_screen._update_log(f"[ERROR] [{address}] {src_name} invalid data")
                     self.main_screen._on_task_done()
                     continue
-                # 存储数据
                 self.main_screen._store_data(address, src_name, stats, data)
-                # 收集图表数据
                 years = [d['YEAR'] for d in data]
                 ghi = [d['GHI_kWh_m2_year'] for d in data]
                 addr_charts.append((src_name, years, ghi, stats))
@@ -715,9 +677,7 @@ class DataWorker(threading.Thread):
                 self.main_screen._on_task_done()
 
             if addr_charts:
-                # 绘制图表（主线程）
                 Clock.schedule_once(lambda dt, a=address, charts=addr_charts: self.main_screen._display_charts(a, charts, contract), 0)
-                # 保存独立PNG（主线程延迟执行）
                 Clock.schedule_once(lambda dt, a=address, charts=addr_charts: self.main_screen._save_independent_charts(a, charts), 0.1)
             else:
                 self.main_screen._update_log(f"[ERROR] All sources failed for {address}")
@@ -748,7 +708,6 @@ class MainScreen(BoxLayout):
         self._last_csv_path = None
         self._last_chart_paths = []
 
-        # 设置参数
         self.max_workers = 2
         self.request_delay = 0.5
         self.retry_times = 3
@@ -756,48 +715,49 @@ class MainScreen(BoxLayout):
         self.proxy_host = '127.0.0.1'
         self.proxy_port = 15732
 
-        # 停止事件
         self.stop_event = threading.Event()
         self.worker_threads = []
         self.task_queue = queue.Queue()
 
-        # 创建 TabbedPanel
+        # TabbedPanel - tab_width 翻倍
         self.tabs = TabbedPanel(do_default_tab=False)
         self.tabs.default_tab_text = 'Data'
-        self.tabs.tab_width = 120
+        self.tabs.tab_width = 240  # 翻倍
 
         # ---- Tab1: Data ----
         tab_data = TabbedPanelHeader(text='Data')
         data_content = BoxLayout(orientation='vertical', spacing=5, padding=5)
-        # 参数输入区域：垂直三行
-        param_box = BoxLayout(orientation='vertical', size_hint_y=None, height=150, spacing=5)
-        # 第1行：Start Year
-        row1 = BoxLayout(size_hint_y=None, height=40, spacing=5)
+        # 参数输入区域，高度增加
+        param_box = BoxLayout(orientation='vertical', size_hint_y=None, height=200, spacing=5)  # 原150
+        # Start Year
+        row1 = BoxLayout(size_hint_y=None, height=80, spacing=5)  # 原40
         row1.add_widget(Label(text='Start Year:', size_hint_x=0.3))
-        self.start_year = TextInput(text='2010', multiline=False, input_filter='int', size_hint_x=0.7, font_size='14sp')
+        self.start_year = TextInput(text='2010', multiline=False, input_filter='int', size_hint_x=0.7, font_size='18sp')
         row1.add_widget(self.start_year)
         param_box.add_widget(row1)
-        # 第2行：End Year
-        row2 = BoxLayout(size_hint_y=None, height=40, spacing=5)
+        # End Year
+        row2 = BoxLayout(size_hint_y=None, height=80, spacing=5)
         row2.add_widget(Label(text='End Year:', size_hint_x=0.3))
-        self.end_year = TextInput(text='2025', multiline=False, input_filter='int', size_hint_x=0.7, font_size='14sp')
+        self.end_year = TextInput(text='2025', multiline=False, input_filter='int', size_hint_x=0.7, font_size='18sp')
         row2.add_widget(self.end_year)
         param_box.add_widget(row2)
-        # 第3行留空或可放其它，但Chart Type已移除
+        # 第三行占位
         row3 = BoxLayout(size_hint_y=None, height=40)
-        param_box.add_widget(row3)  # 占位保持布局
+        param_box.add_widget(row3)
         data_content.add_widget(param_box)
 
+        # 表格 - 行高加倍
         self.table_container = ScrollView(size_hint_y=0.3)
-        self.table_grid = GridLayout(cols=4, size_hint_y=None, spacing=2, row_default_height=40)
+        self.table_grid = GridLayout(cols=4, size_hint_y=None, spacing=2, row_default_height=80)  # 原40
         self.table_grid.bind(minimum_height=self.table_grid.setter('height'))
         for h in ['Address', 'Latitude', 'Longitude', 'Contract']:
-            self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True, font_size='12sp'))
+            self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True, font_size='14sp'))
         self.add_table_row('Shanghai, China', '', '', '1500')
         self.table_container.add_widget(self.table_grid)
         data_content.add_widget(self.table_container)
 
-        # 按钮区域：分三行
+        # 按钮区域：四行
+        # 第一行
         btn_row1 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         add_btn = Button(text='Add Row')
         add_btn.bind(on_press=self.add_row)
@@ -810,6 +770,7 @@ class MainScreen(BoxLayout):
         btn_row1.add_widget(clear_btn)
         data_content.add_widget(btn_row1)
 
+        # 第二行
         btn_row2 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         load_btn = Button(text='Import CSV')
         load_btn.bind(on_press=self.load_csv)
@@ -819,6 +780,7 @@ class MainScreen(BoxLayout):
         btn_row2.add_widget(save_btn)
         data_content.add_widget(btn_row2)
 
+        # 第三行
         btn_row3 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         self.start_btn = Button(text='Start', background_color=(0.2,0.7,0.2,1))
         self.start_btn.bind(on_press=self.start_processing)
@@ -826,19 +788,23 @@ class MainScreen(BoxLayout):
         self.stop_btn.bind(on_press=self.stop_processing)
         self.retry_btn = Button(text='Retry All', background_color=(0.8,0.6,0.2,1))
         self.retry_btn.bind(on_press=self.retry_all)
+        btn_row3.add_widget(self.start_btn)
+        btn_row3.add_widget(self.stop_btn)
+        btn_row3.add_widget(self.retry_btn)
+        data_content.add_widget(btn_row3)
+
+        # 第四行：Network Test, Settings, Export to Local
+        btn_row4 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         self.test_btn = Button(text='Network Test', background_color=(0.3,0.5,0.8,1))
         self.test_btn.bind(on_press=self.network_test)
         self.settings_btn = Button(text='Settings', background_color=(0.5,0.5,0.5,1))
         self.settings_btn.bind(on_press=self.open_settings)
         self.export_local_btn = Button(text='Export to Local', background_color=(0.2,0.6,0.8,1))
         self.export_local_btn.bind(on_press=self.export_all_to_local)
-        btn_row3.add_widget(self.start_btn)
-        btn_row3.add_widget(self.stop_btn)
-        btn_row3.add_widget(self.retry_btn)
-        btn_row3.add_widget(self.test_btn)
-        btn_row3.add_widget(self.settings_btn)
-        btn_row3.add_widget(self.export_local_btn)
-        data_content.add_widget(btn_row3)
+        btn_row4.add_widget(self.test_btn)
+        btn_row4.add_widget(self.settings_btn)
+        btn_row4.add_widget(self.export_local_btn)
+        data_content.add_widget(btn_row4)
 
         self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=10)
         data_content.add_widget(self.progress)
@@ -864,7 +830,7 @@ class MainScreen(BoxLayout):
         tab_chart = TabbedPanelHeader(text='Charts')
         chart_content = BoxLayout(orientation='vertical', spacing=5, padding=5)
         self.chart_container = ScrollView(bar_width=10, bar_color=[0.5,0.5,0.5,1])
-        self.chart_box = BoxLayout(orientation='vertical', size_hint_y=None)
+        self.chart_box = BoxLayout(orientation='vertical', size_hint_y=None, spacing=2)  # 减小间距
         self.chart_box.bind(minimum_height=self.chart_box.setter('height'))
         self.chart_container.add_widget(self.chart_box)
         chart_content.add_widget(self.chart_container)
@@ -879,13 +845,11 @@ class MainScreen(BoxLayout):
         # ---- Tab4: Forecast ----
         tab_forecast = TabbedPanelHeader(text='Forecast')
         forecast_content = BoxLayout(orientation='vertical', spacing=5, padding=5)
-        # 生成按钮
         gen_btn = Button(text='Generate Forecast (10 years)', size_hint_y=None, height=50)
         gen_btn.bind(on_press=self.generate_forecast)
         forecast_content.add_widget(gen_btn)
-        # 显示区域
         self.forecast_container = ScrollView(bar_width=10, bar_color=[0.5,0.5,0.5,1])
-        self.forecast_box = BoxLayout(orientation='vertical', size_hint_y=None)
+        self.forecast_box = BoxLayout(orientation='vertical', size_hint_y=None, spacing=2)  # 紧凑
         self.forecast_box.bind(minimum_height=self.forecast_box.setter('height'))
         self.forecast_container.add_widget(self.forecast_box)
         forecast_content.add_widget(self.forecast_container)
@@ -899,10 +863,10 @@ class MainScreen(BoxLayout):
 
     # ---- 表格操作 ----
     def add_table_row(self, addr='', lat='', lon='', contract=''):
-        self.table_grid.add_widget(TextInput(text=addr, multiline=False, font_size='12sp'))
-        self.table_grid.add_widget(TextInput(text=lat, multiline=False, font_size='12sp'))
-        self.table_grid.add_widget(TextInput(text=lon, multiline=False, font_size='12sp'))
-        self.table_grid.add_widget(TextInput(text=contract, multiline=False, font_size='12sp'))
+        self.table_grid.add_widget(TextInput(text=addr, multiline=False, font_size='14sp'))
+        self.table_grid.add_widget(TextInput(text=lat, multiline=False, font_size='14sp'))
+        self.table_grid.add_widget(TextInput(text=lon, multiline=False, font_size='14sp'))
+        self.table_grid.add_widget(TextInput(text=contract, multiline=False, font_size='14sp'))
 
     def add_row(self, instance):
         self.add_table_row()
@@ -918,11 +882,10 @@ class MainScreen(BoxLayout):
     def clear_all(self, instance):
         self.table_grid.clear_widgets()
         for h in ['Address', 'Latitude', 'Longitude', 'Contract']:
-            self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True, font_size='12sp'))
+            self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True, font_size='14sp'))
 
     def load_csv(self, instance):
         self._update_log('[WARN] CSV import on Android not fully implemented, please enter addresses manually')
-        # 示例添加测试地址
         for i in range(3):
             self.add_table_row(f'Address {i+1}', '', '', '')
 
@@ -1024,7 +987,7 @@ class MainScreen(BoxLayout):
         popup = SettingsPopup(self)
         popup.open()
 
-    # ---- 处理流程（并发 + 队列） ----
+    # ---- 处理流程 ----
     def start_processing(self, instance):
         if self.is_running:
             self._update_log('[WARN] Already running.')
@@ -1142,7 +1105,7 @@ class MainScreen(BoxLayout):
         self._show_statistics_popup()
         gc.collect()
 
-    # ---- 进度和日志（主线程安全） ----
+    # ---- 进度和日志 ----
     @mainthread
     def _update_log(self, msg):
         self.log_text.text += f'\n{msg}'
@@ -1166,23 +1129,23 @@ class MainScreen(BoxLayout):
         self.results[address][src_name] = stats
         self.yearly[address][src_name] = data
 
-    # ---- 图表显示（含合同线） ----
+    # ---- 图表显示（紧凑） ----
     def _display_charts(self, addr, charts, contract_value=None):
-        title_label = Label(text=f'Address: {addr}', size_hint_y=None, height=30, bold=True, font_size='14sp')
+        title_label = Label(text=f'Address: {addr}', size_hint_y=None, height=25, bold=True, font_size='13sp')
         self.chart_box.add_widget(title_label)
         for src_name, years, ghi, stats in charts:
-            src_label = Label(text=f'Source: {src_name}', size_hint_y=None, height=20, font_size='12sp')
+            src_label = Label(text=f'Source: {src_name}', size_hint_y=None, height=15, font_size='11sp')
             self.chart_box.add_widget(src_label)
             chart_widget = LineChartWidget(x_values=years, y_values=ghi,
                                            contract_value=contract_value,
-                                           size_hint_y=None, height=150)
+                                           size_hint_y=None, height=130)
             self.chart_box.add_widget(chart_widget)
             info = (f"Avg: {stats['avg']:.1f}   Max: {stats['max']:.1f}   Min: {stats['min']:.1f}   "
                     f"Stability: {stats['stability']:.1f}%   Years: {stats['years']}")
-            info_label = Label(text=info, size_hint_y=None, height=18, font_size='11sp')
+            info_label = Label(text=info, size_hint_y=None, height=16, font_size='10sp')
             self.chart_box.add_widget(info_label)
         total_height = sum(child.height for child in self.chart_box.children if hasattr(child, 'height'))
-        total_height += 5 * len(self.chart_box.children)
+        total_height += 4 * len(self.chart_box.children)
         self.chart_box.height = max(total_height, 100)
 
     # ---- 独立PNG保存 ----
@@ -1230,7 +1193,7 @@ class MainScreen(BoxLayout):
         except Exception as e:
             self._update_log(f'[ERROR] CSV export failed: {e}')
 
-    # ---- 文件保存（兼容所有Android版本） ----
+    # ---- 文件保存 ----
     def _save_to_downloads(self, filename, content_bytes, mime_type='text/csv'):
         try:
             from jnius import autoclass
@@ -1278,7 +1241,7 @@ class MainScreen(BoxLayout):
                 f.write(content_bytes)
             return path
 
-    # ---- 一键导出到本地 ----
+    # ---- 一键导出 ----
     def export_all_to_local(self, instance):
         if not self.yearly and not self._last_chart_paths:
             self._update_log('[WARN] No data to export, run data collection first.')
@@ -1387,21 +1350,17 @@ class MainScreen(BoxLayout):
                           size_hint=(0.8,0.5))
             popup.open()
 
-    # ==============================================================
-    # ---------------- Forecast (预测) 功能 -------------------------
-    # ==============================================================
+    # ---- Forecast 预测 ----
     def generate_forecast(self, instance):
-        """基于已有历史数据，生成未来10年预测（按数据源）"""
         if not self.results:
             self._update_log('[WARN] No historical data. Please collect data first.')
             popup = Popup(title='No Data', content=Label(text='Please collect data first.'), size_hint=(0.8,0.4))
             popup.open()
             return
 
-        # 清空之前预测显示
         self.forecast_box.clear_widgets()
 
-        # 确定历史最后一年：从所有数据中取最大年份
+        # 确定历史最后一年
         max_hist_year = 0
         for addr, sources in self.yearly.items():
             for src, data_list in sources.items():
@@ -1417,74 +1376,66 @@ class MainScreen(BoxLayout):
         forecast_years = list(range(forecast_start_year, forecast_start_year + 10))
         self._update_log(f'[INFO] Generating forecast from {forecast_start_year} to {forecast_start_year+9}')
 
-        # 遍历每个地址和数据源
+        # 新的五段区间（递增）
+        intervals = [
+            (1.01, 1.02),
+            (1.02, 1.03),
+            (1.03, 1.04),
+            (1.04, 1.05),
+            (1.05, 1.06)
+        ]
+
         for addr, sources in self.results.items():
             for src_name, stats in sources.items():
                 avg_val = stats['avg']
                 max_val = stats['max']
-                # 计算 diff = max - avg，如果大于200则截断
                 diff = max_val - avg_val
                 if diff > 200:
                     diff = 200
-                # 计算 Rx
                 if (max_val + avg_val) != 0:
                     Rx = (diff * 2 / (max_val + avg_val)) + 1
                 else:
                     Rx = 1.0
-                # 基准值 Z
                 Z = (avg_val + max_val) / 2
 
-                # 定义五段随机区间
-                intervals = [
-                    (1.1, 1.3),
-                    (1.2, 1.3),
-                    (1.2, 1.4),
-                    (1.3, 1.4),
-                    (1.4, 1.5)
-                ]
-                # 为每段生成两个随机数（对应两年）
+                # 每段生成两个随机数
                 R_list = []
-                for i in range(5):
-                    low, high = intervals[i]
+                for low, high in intervals:
                     r1 = round(random.uniform(low, high), 2)
                     r2 = round(random.uniform(low, high), 2)
-                    R_list.extend([r1, r2])  # 共10个
+                    R_list.extend([r1, r2])
 
-                # 生成预测值
                 pred_values = []
                 for i, yr in enumerate(forecast_years):
                     val = Z * R_list[i] * Rx
                     pred_values.append(val)
 
-                # 显示结果：先显示地址+数据源标题
+                # 显示标题（减小高度30%）
                 title_text = f"Address: {addr}  |  Source: {src_name}"
-                title_label = Label(text=title_text, size_hint_y=None, height=30, bold=True, font_size='14sp')
+                title_label = Label(text=title_text, size_hint_y=None, height=21, bold=True, font_size='12sp')  # 原30
                 self.forecast_box.add_widget(title_label)
 
-                # 表格：显示年份和预测值
-                table_grid = GridLayout(cols=2, size_hint_y=None, spacing=2, row_default_height=25)
+                # 表格（行高缩减30%）
+                table_grid = GridLayout(cols=2, size_hint_y=None, spacing=2, row_default_height=17)  # 原25
                 table_grid.bind(minimum_height=table_grid.setter('height'))
-                # 表头
-                table_grid.add_widget(Label(text='Year', bold=True, size_hint_x=0.5))
-                table_grid.add_widget(Label(text='GHI (kWh/m2)', bold=True, size_hint_x=0.5))
+                table_grid.add_widget(Label(text='Year', bold=True, size_hint_x=0.5, font_size='10sp'))
+                table_grid.add_widget(Label(text='GHI (kWh/m2)', bold=True, size_hint_x=0.5, font_size='10sp'))
                 for yr, val in zip(forecast_years, pred_values):
-                    table_grid.add_widget(Label(text=str(yr), size_hint_x=0.5))
-                    table_grid.add_widget(Label(text=f'{val:.2f}', size_hint_x=0.5))
+                    table_grid.add_widget(Label(text=str(yr), size_hint_x=0.5, font_size='10sp'))
+                    table_grid.add_widget(Label(text=f'{val:.2f}', size_hint_x=0.5, font_size='10sp'))
                 self.forecast_box.add_widget(table_grid)
 
-                # 图表
+                # 图表（高度缩减30%）
                 chart_widget = LineChartWidget(x_values=forecast_years, y_values=pred_values,
-                                               title='Forecast', x_label='Year', y_label='GHI (kWh/m2)',
-                                               contract_value=None, size_hint_y=None, height=150)
+                                               title='Forecast', x_label='Year', y_label='GHI',
+                                               contract_value=None, size_hint_y=None, height=105)  # 原150
                 self.forecast_box.add_widget(chart_widget)
 
-                # 添加分隔线（仅视觉）
-                sep = Widget(size_hint_y=None, height=10)
+                sep = Widget(size_hint_y=None, height=8)
                 self.forecast_box.add_widget(sep)
 
-        # 更新滚动容器高度
         total_h = sum(child.height for child in self.forecast_box.children if hasattr(child, 'height'))
-        total_h += 10 * len(self.forecast_box.children)
+        total_h += 8 * len(self.forecast_box.children)
         self.forecast_box.height = max(total_h, 200)
         self._update_log('[INFO] Forecast generation completed.')
 
@@ -1517,7 +1468,6 @@ class SolarApp(App):
         if not font_loaded:
             self._write_startup_log("[WARN] All system fonts failed, using Kivy default")
 
-        # Android 权限请求
         if platform == 'android':
             try:
                 from android.permissions import request_permissions, Permission
