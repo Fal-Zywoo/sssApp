@@ -67,6 +67,7 @@ def get_requests_session(proxies=None):
     return session
 
 _DEFAULT_SESSION = None
+
 def get_default_session():
     global _DEFAULT_SESSION
     if _DEFAULT_SESSION is None:
@@ -414,7 +415,7 @@ class LineChartWidget(Widget):
         if not self.x_values or not self.y_values:
             return
         w, h = self.width, self.height
-        margin = 40
+        margin = 30
         plot_w = w - 2 * margin
         plot_h = h - 2 * margin
         if plot_w <= 0 or plot_h <= 0:
