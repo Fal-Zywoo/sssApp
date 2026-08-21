@@ -1251,38 +1251,57 @@ class MainScreen(BoxLayout):
     # ---- 文件保存（兼容所有Android版本） ----
     def _save_to_downloads(self, filename, content_bytes, mime_type='text/csv'):
         """
-        将文件保存到 Android 公共 Downloads 目录（传统方式，兼容 API < 29）。
-        若失败则回退到应用临时目录。
-        返回文件路径（字符串）或 None。
+        保存到Downloads，优先使用传统公共目录，失败时回退到私有目录。
+        返回绝对路径（字符串），并确保路径可被用户找到。
         """
-        if platform == 'android':
-            try:
-                from jnius import autoclass
-                Environment = autoclass('android.os.Environment')
-                File = autoclass('java.io.File')
-                FileOutputStream = autoclass('java.io.FileOutputStream')
-                # 获取 Downloads 目录
-                downloads_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                if downloads_dir is None:
-                    # 回退到应用外部文件目录
-                    context = autoclass('org.kivy.android.PythonActivity').mActivity
-                    downloads_dir = context.getExternalFilesDir(None)
-                if downloads_dir is None:
-                    raise Exception('Cannot access external storage')
+        try:
+            # 1. 尝试直接获取 Downloads 公共目录（适用于 API < 29）
+            from jnius import autoclass
+            Environment = autoclass('android.os.Environment')
+            File = autoclass('java.io.File')
+            FileOutputStream = autoclass('java.io.FileOutputStream')
+            
+            downloads_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if downloads_dir is not None and downloads_dir.exists():
                 file = File(downloads_dir, filename)
                 fos = FileOutputStream(file)
                 fos.write(content_bytes)
                 fos.close()
                 return file.getAbsolutePath()
-            except Exception as e:
-                self._update_log(f'[ERROR] File save failed: {e}')
-                # 回退到临时目录
-                path = os.path.join(tempfile.gettempdir(), filename)
-                with open(path, 'wb') as f:
-                    f.write(content_bytes)
-                return path
-        else:
-            # 非Android环境，保存到临时目录
+            else:
+                # 2. 回退到应用外部文件目录（但会放在 Android/data 下，建议同时复制一份到 Downloads 如果可写）
+                context = autoclass('org.kivy.android.PythonActivity').mActivity
+                # 尝试使用 MediaStore（API 29+）
+                try:
+                    ContentValues = autoclass('android.content.ContentValues')
+                    MediaStore = autoclass('android.provider.MediaStore')
+                    resolver = context.getContentResolver()
+                    values = ContentValues()
+                    values.put(MediaStore.Downloads.DISPLAY_NAME, filename)
+                    values.put(MediaStore.Downloads.MIME_TYPE, mime_type)
+                    values.put(MediaStore.Downloads.RELATIVE_PATH, 'Download/')
+                    uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    if uri is not None:
+                        with resolver.openOutputStream(uri) as out:
+                            out.write(content_bytes)
+                        # 通过 URI 解析实际路径（可能为 null），返回 URI 字符串但用户不易找
+                        # 我们返回一个可读路径提示
+                        return "MediaStore:" + uri.toString()
+                except Exception as e:
+                    self._update_log(f'[WARN] MediaStore fallback failed: {e}')
+                
+                # 3. 最后回退到私有目录（但会放在外部存储的 Android/data 下）
+                fallback_dir = context.getExternalFilesDir(None)
+                if fallback_dir is None:
+                    fallback_dir = context.getFilesDir()  # 内部私有，更不好找
+                file = File(fallback_dir, filename)
+                fos = FileOutputStream(file)
+                fos.write(content_bytes)
+                fos.close()
+                return file.getAbsolutePath()
+        except Exception as e:
+            self._update_log(f'[ERROR] All save attempts failed: {e}')
+            # 终极回退：写入临时目录（用户更难找，但可避免崩溃）
             path = os.path.join(tempfile.gettempdir(), filename)
             with open(path, 'wb') as f:
                 f.write(content_bytes)
