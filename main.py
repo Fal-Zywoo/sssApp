@@ -2,14 +2,7 @@
 """
 Android Solar Radiation Collector - Full Optimization (Tabbed UI)
 Last updated: 2026.08.21
-
-改进项集成（共18项）+ 额外UI优化：
-- 输入框高度加倍，表格行高翻倍
-- 按钮分为四行，第四行包含 Network Test, Settings, Export to Local
-- 图表布局进一步紧凑，减少遮挡
-- Forecast 界面字符高度减少30%，并优化间距
-- Tab 按钮宽度翻倍
-- 预测系数 R 区间调整为 1.01~1.02, 1.02~1.03, ... 1.05~1.06
+最终版本 - 所有改进项已集成，Forecast 表格行高增大，易读性提升。
 """
 
 import requests
@@ -35,7 +28,7 @@ import math
 # 禁用 urllib3 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ---------- 自定义 SSL 上下文（修复 check_hostname 冲突） ----------
+# ---------- 自定义 SSL 上下文 ----------
 def create_ssl_context():
     try:
         context = ssl.create_default_context()
@@ -74,7 +67,6 @@ def get_requests_session(proxies=None):
     return session
 
 _DEFAULT_SESSION = None
-
 def get_default_session():
     global _DEFAULT_SESSION
     if _DEFAULT_SESSION is None:
@@ -97,7 +89,7 @@ def global_exception_handler(exc_type, exc_value, exc_tb):
 
 sys.excepthook = global_exception_handler
 
-# ---------- 导入 Kivy 相关 ----------
+# ---------- 导入 Kivy ----------
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
@@ -564,36 +556,41 @@ class SettingsPopup(Popup):
         self.main_screen = main_screen
         layout = BoxLayout(orientation='vertical', spacing=10, padding=10)
 
-        hbox1 = BoxLayout(spacing=5)
-        hbox1.add_widget(Label(text='Max Concurrent Addresses:', size_hint_x=0.5))
-        self.concurrent_spin = Spinner(text=str(main_screen.max_workers), values=[str(i) for i in range(1, 11)])
-        hbox1.add_widget(self.concurrent_spin)
-        layout.add_widget(hbox1)
+        # 并发数
+        row1 = BoxLayout(size_hint_y=None, height=40, spacing=5)
+        row1.add_widget(Label(text='Max Concurrent:', size_hint_x=0.5, halign='right'))
+        self.concurrent_spin = Spinner(text=str(main_screen.max_workers), values=[str(i) for i in range(1, 11)], size_hint_x=0.4)
+        row1.add_widget(self.concurrent_spin)
+        layout.add_widget(row1)
 
-        hbox2 = BoxLayout(spacing=5)
-        hbox2.add_widget(Label(text='Request Delay (sec):', size_hint_x=0.5))
-        self.delay_input = TextInput(text=str(main_screen.request_delay), multiline=False, input_filter='float')
-        hbox2.add_widget(self.delay_input)
-        layout.add_widget(hbox2)
+        # 请求延迟
+        row2 = BoxLayout(size_hint_y=None, height=40, spacing=5)
+        row2.add_widget(Label(text='Request Delay (sec):', size_hint_x=0.5, halign='right'))
+        self.delay_input = TextInput(text=str(main_screen.request_delay), multiline=False, input_filter='float', size_hint_x=0.4)
+        row2.add_widget(self.delay_input)
+        layout.add_widget(row2)
 
-        hbox3 = BoxLayout(spacing=5)
-        hbox3.add_widget(Label(text='Retry Times:', size_hint_x=0.5))
-        self.retry_spin = Spinner(text=str(main_screen.retry_times), values=[str(i) for i in range(1, 6)])
-        hbox3.add_widget(self.retry_spin)
-        layout.add_widget(hbox3)
+        # 重试次数
+        row3 = BoxLayout(size_hint_y=None, height=40, spacing=5)
+        row3.add_widget(Label(text='Retry Times:', size_hint_x=0.5, halign='right'))
+        self.retry_spin = Spinner(text=str(main_screen.retry_times), values=[str(i) for i in range(1, 6)], size_hint_x=0.4)
+        row3.add_widget(self.retry_spin)
+        layout.add_widget(row3)
 
-        hbox4 = BoxLayout(spacing=5)
-        self.proxy_check = CheckBox(active=main_screen.proxy_enabled)
-        hbox4.add_widget(self.proxy_check)
-        hbox4.add_widget(Label(text='Enable Proxy', size_hint_x=0.3))
-        hbox4.add_widget(Label(text='Host:', size_hint_x=0.15))
-        self.proxy_host = TextInput(text=main_screen.proxy_host, multiline=False, size_hint_x=0.3)
-        hbox4.add_widget(self.proxy_host)
-        hbox4.add_widget(Label(text='Port:', size_hint_x=0.15))
-        self.proxy_port = TextInput(text=str(main_screen.proxy_port), multiline=False, input_filter='int', size_hint_x=0.2)
-        hbox4.add_widget(self.proxy_port)
-        layout.add_widget(hbox4)
+        # 代理配置
+        row4 = BoxLayout(size_hint_y=None, height=40, spacing=5)
+        self.proxy_check = CheckBox(active=main_screen.proxy_enabled, size_hint_x=0.1)
+        row4.add_widget(self.proxy_check)
+        row4.add_widget(Label(text='Enable Proxy', size_hint_x=0.2))
+        row4.add_widget(Label(text='Host:', size_hint_x=0.12, halign='right'))
+        self.proxy_host = TextInput(text=main_screen.proxy_host, multiline=False, size_hint_x=0.25)
+        row4.add_widget(self.proxy_host)
+        row4.add_widget(Label(text='Port:', size_hint_x=0.1, halign='right'))
+        self.proxy_port = TextInput(text=str(main_screen.proxy_port), multiline=False, input_filter='int', size_hint_x=0.15)
+        row4.add_widget(self.proxy_port)
+        layout.add_widget(row4)
 
+        # 按钮
         btn_box = BoxLayout(size_hint_y=None, height=50, spacing=10)
         save_btn = Button(text='Save')
         save_btn.bind(on_press=self.save_settings)
@@ -719,36 +716,30 @@ class MainScreen(BoxLayout):
         self.worker_threads = []
         self.task_queue = queue.Queue()
 
-        # TabbedPanel - tab_width 翻倍
         self.tabs = TabbedPanel(do_default_tab=False)
         self.tabs.default_tab_text = 'Data'
-        self.tabs.tab_width = 240  # 翻倍
+        self.tabs.tab_width = 240
 
         # ---- Tab1: Data ----
         tab_data = TabbedPanelHeader(text='Data')
         data_content = BoxLayout(orientation='vertical', spacing=5, padding=5)
-        # 参数输入区域，高度增加
-        param_box = BoxLayout(orientation='vertical', size_hint_y=None, height=200, spacing=5)  # 原150
-        # Start Year
-        row1 = BoxLayout(size_hint_y=None, height=80, spacing=5)  # 原40
+        param_box = BoxLayout(orientation='vertical', size_hint_y=None, height=200, spacing=5)
+        row1 = BoxLayout(size_hint_y=None, height=80, spacing=5)
         row1.add_widget(Label(text='Start Year:', size_hint_x=0.3))
         self.start_year = TextInput(text='2010', multiline=False, input_filter='int', size_hint_x=0.7, font_size='18sp')
         row1.add_widget(self.start_year)
         param_box.add_widget(row1)
-        # End Year
         row2 = BoxLayout(size_hint_y=None, height=80, spacing=5)
         row2.add_widget(Label(text='End Year:', size_hint_x=0.3))
         self.end_year = TextInput(text='2025', multiline=False, input_filter='int', size_hint_x=0.7, font_size='18sp')
         row2.add_widget(self.end_year)
         param_box.add_widget(row2)
-        # 第三行占位
         row3 = BoxLayout(size_hint_y=None, height=40)
         param_box.add_widget(row3)
         data_content.add_widget(param_box)
 
-        # 表格 - 行高加倍
         self.table_container = ScrollView(size_hint_y=0.3)
-        self.table_grid = GridLayout(cols=4, size_hint_y=None, spacing=2, row_default_height=80)  # 原40
+        self.table_grid = GridLayout(cols=4, size_hint_y=None, spacing=2, row_default_height=80)
         self.table_grid.bind(minimum_height=self.table_grid.setter('height'))
         for h in ['Address', 'Latitude', 'Longitude', 'Contract']:
             self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True, font_size='14sp'))
@@ -756,8 +747,7 @@ class MainScreen(BoxLayout):
         self.table_container.add_widget(self.table_grid)
         data_content.add_widget(self.table_container)
 
-        # 按钮区域：四行
-        # 第一行
+        # 按钮四行
         btn_row1 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         add_btn = Button(text='Add Row')
         add_btn.bind(on_press=self.add_row)
@@ -770,7 +760,6 @@ class MainScreen(BoxLayout):
         btn_row1.add_widget(clear_btn)
         data_content.add_widget(btn_row1)
 
-        # 第二行
         btn_row2 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         load_btn = Button(text='Import CSV')
         load_btn.bind(on_press=self.load_csv)
@@ -780,7 +769,6 @@ class MainScreen(BoxLayout):
         btn_row2.add_widget(save_btn)
         data_content.add_widget(btn_row2)
 
-        # 第三行
         btn_row3 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         self.start_btn = Button(text='Start', background_color=(0.2,0.7,0.2,1))
         self.start_btn.bind(on_press=self.start_processing)
@@ -793,7 +781,6 @@ class MainScreen(BoxLayout):
         btn_row3.add_widget(self.retry_btn)
         data_content.add_widget(btn_row3)
 
-        # 第四行：Network Test, Settings, Export to Local
         btn_row4 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         self.test_btn = Button(text='Network Test', background_color=(0.3,0.5,0.8,1))
         self.test_btn.bind(on_press=self.network_test)
@@ -816,6 +803,7 @@ class MainScreen(BoxLayout):
         tab_log = TabbedPanelHeader(text='Log')
         log_content = BoxLayout(orientation='vertical', spacing=2, padding=5)
         log_content.add_widget(Label(text='Log Output:', size_hint_y=None, height=20, font_size='12sp'))
+        log_content.add_widget(Widget(size_hint_y=None, height=20))  # 上方空隙
         self.log_text = TextInput(text='', readonly=True, multiline=True, halign='left', font_size='11sp')
         log_scroll = ScrollView(bar_width=10, bar_color=[0.5,0.5,0.5,1])
         log_scroll.add_widget(self.log_text)
@@ -830,7 +818,7 @@ class MainScreen(BoxLayout):
         tab_chart = TabbedPanelHeader(text='Charts')
         chart_content = BoxLayout(orientation='vertical', spacing=5, padding=5)
         self.chart_container = ScrollView(bar_width=10, bar_color=[0.5,0.5,0.5,1])
-        self.chart_box = BoxLayout(orientation='vertical', size_hint_y=None, spacing=2)  # 减小间距
+        self.chart_box = BoxLayout(orientation='vertical', size_hint_y=None, spacing=1)
         self.chart_box.bind(minimum_height=self.chart_box.setter('height'))
         self.chart_container.add_widget(self.chart_box)
         chart_content.add_widget(self.chart_container)
@@ -849,7 +837,7 @@ class MainScreen(BoxLayout):
         gen_btn.bind(on_press=self.generate_forecast)
         forecast_content.add_widget(gen_btn)
         self.forecast_container = ScrollView(bar_width=10, bar_color=[0.5,0.5,0.5,1])
-        self.forecast_box = BoxLayout(orientation='vertical', size_hint_y=None, spacing=2)  # 紧凑
+        self.forecast_box = BoxLayout(orientation='vertical', size_hint_y=None, spacing=2)
         self.forecast_box.bind(minimum_height=self.forecast_box.setter('height'))
         self.forecast_container.add_widget(self.forecast_box)
         forecast_content.add_widget(self.forecast_container)
@@ -1129,23 +1117,33 @@ class MainScreen(BoxLayout):
         self.results[address][src_name] = stats
         self.yearly[address][src_name] = data
 
-    # ---- 图表显示（紧凑） ----
+    # ---- 图表显示 ----
     def _display_charts(self, addr, charts, contract_value=None):
-        title_label = Label(text=f'Address: {addr}', size_hint_y=None, height=25, bold=True, font_size='13sp')
+        title_label = Label(text=f'Address: {addr}', size_hint_y=None, height=30, bold=True, font_size='14sp')
         self.chart_box.add_widget(title_label)
-        for src_name, years, ghi, stats in charts:
-            src_label = Label(text=f'Source: {src_name}', size_hint_y=None, height=15, font_size='11sp')
+        spacer = Widget(size_hint_y=None, height=15)
+        self.chart_box.add_widget(spacer)
+
+        for idx, (src_name, years, ghi, stats) in enumerate(charts):
+            src_label = Label(text=f'Source: {src_name}', size_hint_y=None, height=20, font_size='12sp', bold=True)
             self.chart_box.add_widget(src_label)
             chart_widget = LineChartWidget(x_values=years, y_values=ghi,
                                            contract_value=contract_value,
-                                           size_hint_y=None, height=130)
+                                           size_hint_y=None, height=650)
             self.chart_box.add_widget(chart_widget)
             info = (f"Avg: {stats['avg']:.1f}   Max: {stats['max']:.1f}   Min: {stats['min']:.1f}   "
                     f"Stability: {stats['stability']:.1f}%   Years: {stats['years']}")
-            info_label = Label(text=info, size_hint_y=None, height=16, font_size='10sp')
+            info_label = Label(text=info, size_hint_y=None, height=18, font_size='11sp')
             self.chart_box.add_widget(info_label)
+            if idx < len(charts) - 1:
+                sep = Widget(size_hint_y=None, height=5)
+                self.chart_box.add_widget(sep)
+
+        end_spacer = Widget(size_hint_y=None, height=20)
+        self.chart_box.add_widget(end_spacer)
+
         total_height = sum(child.height for child in self.chart_box.children if hasattr(child, 'height'))
-        total_height += 4 * len(self.chart_box.children)
+        total_height += 5 * len(self.chart_box.children)
         self.chart_box.height = max(total_height, 100)
 
     # ---- 独立PNG保存 ----
@@ -1350,7 +1348,7 @@ class MainScreen(BoxLayout):
                           size_hint=(0.8,0.5))
             popup.open()
 
-    # ---- Forecast 预测 ----
+    # ---- Forecast 预测 (表格行高增大，字体放大) ----
     def generate_forecast(self, instance):
         if not self.results:
             self._update_log('[WARN] No historical data. Please collect data first.')
@@ -1360,7 +1358,6 @@ class MainScreen(BoxLayout):
 
         self.forecast_box.clear_widgets()
 
-        # 确定历史最后一年
         max_hist_year = 0
         for addr, sources in self.yearly.items():
             for src, data_list in sources.items():
@@ -1376,7 +1373,6 @@ class MainScreen(BoxLayout):
         forecast_years = list(range(forecast_start_year, forecast_start_year + 10))
         self._update_log(f'[INFO] Generating forecast from {forecast_start_year} to {forecast_start_year+9}')
 
-        # 新的五段区间（递增）
         intervals = [
             (1.01, 1.02),
             (1.02, 1.03),
@@ -1398,7 +1394,6 @@ class MainScreen(BoxLayout):
                     Rx = 1.0
                 Z = (avg_val + max_val) / 2
 
-                # 每段生成两个随机数
                 R_list = []
                 for low, high in intervals:
                     r1 = round(random.uniform(low, high), 2)
@@ -1410,25 +1405,24 @@ class MainScreen(BoxLayout):
                     val = Z * R_list[i] * Rx
                     pred_values.append(val)
 
-                # 显示标题（减小高度30%）
                 title_text = f"Address: {addr}  |  Source: {src_name}"
-                title_label = Label(text=title_text, size_hint_y=None, height=21, bold=True, font_size='12sp')  # 原30
+                title_label = Label(text=title_text, size_hint_y=None, height=21, bold=True, font_size='12sp')
                 self.forecast_box.add_widget(title_label)
 
-                # 表格（行高缩减30%）
-                table_grid = GridLayout(cols=2, size_hint_y=None, spacing=2, row_default_height=17)  # 原25
+                # 表格行高增大至30，字体12sp
+                table_grid = GridLayout(cols=2, size_hint_y=None, spacing=2, row_default_height=30)
                 table_grid.bind(minimum_height=table_grid.setter('height'))
-                table_grid.add_widget(Label(text='Year', bold=True, size_hint_x=0.5, font_size='10sp'))
-                table_grid.add_widget(Label(text='GHI (kWh/m2)', bold=True, size_hint_x=0.5, font_size='10sp'))
+                table_grid.add_widget(Label(text='Year', bold=True, size_hint_x=0.5, font_size='12sp'))
+                table_grid.add_widget(Label(text='GHI (kWh/m2)', bold=True, size_hint_x=0.5, font_size='12sp'))
                 for yr, val in zip(forecast_years, pred_values):
-                    table_grid.add_widget(Label(text=str(yr), size_hint_x=0.5, font_size='10sp'))
-                    table_grid.add_widget(Label(text=f'{val:.2f}', size_hint_x=0.5, font_size='10sp'))
+                    table_grid.add_widget(Label(text=str(yr), size_hint_x=0.5, font_size='12sp'))
+                    table_grid.add_widget(Label(text=f'{val:.2f}', size_hint_x=0.5, font_size='12sp'))
                 self.forecast_box.add_widget(table_grid)
 
-                # 图表（高度缩减30%）
+                # 图表高度保持525（已增大5倍）
                 chart_widget = LineChartWidget(x_values=forecast_years, y_values=pred_values,
                                                title='Forecast', x_label='Year', y_label='GHI',
-                                               contract_value=None, size_hint_y=None, height=105)  # 原150
+                                               contract_value=None, size_hint_y=None, height=525)
                 self.forecast_box.add_widget(chart_widget)
 
                 sep = Widget(size_hint_y=None, height=8)
@@ -1445,7 +1439,7 @@ class MainScreen(BoxLayout):
 class SolarApp(App):
     def build(self):
         self._write_startup_log("App starting...")
-        # 尝试加载系统字体
+        # 加载系统字体
         font_dirs = ['/system/fonts/', '/system/fonts/fallback/']
         font_files = ['DroidSansFallback.ttf', 'NotoSansCJK-Regular.ttc', 'NotoSansSC-Regular.otf',
                       'NotoSansCJKsc-Regular.otf', 'NotoSansCJK.ttc', 'NotoSans-Regular.ttf']
