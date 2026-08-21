@@ -1,27 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Android Solar Radiation Collector - Full Optimization (Tabbed UI)
+Android Solar Radiation Collector - Full Optimization + Matplotlib Charts
 Last updated: 2026.08.21
 
-全部改进项集成（共18项）：
-1. 进度反馈精细化（数据源级）
-2. 并发处理（多地址并行，可配置并发数）
-3. CSV导出异步化（后台线程）
-4. API请求间隔控制（可配置）
-5. 代理配置UI（设置弹窗）
-6. 合同数据利用（图表基准线）
-7. 表格CSV导入/导出（实现load_csv/save_csv）
-8. 独立PNG图表保存（每个地址+数据源）
-9. 统一重试策略（可配置）
-10. 停止机制增强（及时响应）
-11. 日志等级前缀
-12. 网络测试集成代理
-13. 本地文件保存（写入Downloads目录，兼容Android所有版本）
-14. 统计信息汇总显示（任务完成弹窗）
-15. 内存管理优化（gc.collect）
-16. 地理编码增强（OSM + 本地词典）
-17. PVGIS TMY优化（tmy_hourly + 经验估算）
-18. 导出功能整合（一键导出到Downloads）
+包含全部18项改进 + matplotlib 专业图表（与Ver2一致）
 """
 
 import requests
@@ -40,18 +22,23 @@ import urllib3
 import random
 import gc
 import queue
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
+import io
+
+# ---------- 强制 matplotlib 使用 Agg 后端（非交互式，线程安全） ----------
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties
+# 设置中文字体（Android 系统可能有 NotoSansCJK）
+plt.rcParams['font.sans-serif'] = ['NotoSansCJK', 'DroidSansFallback', 'SimHei', 'Microsoft YaHei']
+plt.rcParams['axes.unicode_minus'] = False
 
 # 禁用 urllib3 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ---------- 自定义 SSL 上下文（修复 check_hostname 冲突） ----------
 def create_ssl_context():
-    """
-    创建兼容性更好的 SSL 上下文，允许 TLSv1.0+ 和常见加密套件，
-    并显式禁用证书验证与主机名检查，避免 'CERT_NONE with check_hostname' 错误。
-    """
     try:
         context = ssl.create_default_context()
         context.minimum_version = ssl.TLSVersion.TLSv1
@@ -78,9 +65,6 @@ class CustomHTTPAdapter(requests.adapters.HTTPAdapter):
 
 # ---------- 全局 Session（带重试和自定义适配器） ----------
 def get_requests_session(proxies=None):
-    """
-    返回配置好的 requests Session，使用自定义 SSL 适配器并设置重试策略。
-    """
     session = requests.Session()
     retry = urllib3.Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
     adapter = CustomHTTPAdapter(max_retries=retry)
@@ -95,7 +79,6 @@ def get_requests_session(proxies=None):
 
 # ---------- 全局 Session 单例 ----------
 _DEFAULT_SESSION = None
-
 def get_default_session():
     global _DEFAULT_SESSION
     if _DEFAULT_SESSION is None:
@@ -116,7 +99,6 @@ def global_exception_handler(exc_type, exc_value, exc_tb):
         pass
     print(error_msg)
     sys.__excepthook__(exc_type, exc_value, exc_tb)
-
 sys.excepthook = global_exception_handler
 
 # ---------- 导入 Kivy 相关 ----------
@@ -130,6 +112,7 @@ from kivy.uix.button import Button
 from kivy.uix.progressbar import ProgressBar
 from kivy.uix.popup import Popup
 from kivy.uix.widget import Widget
+from kivy.uix.image import Image
 from kivy.graphics import Color, Line
 from kivy.clock import Clock, mainthread
 from kivy.utils import platform
@@ -185,38 +168,18 @@ def set_proxy_env(proxies):
 # ---------- 地理编码增强（OSM + 本地词典） ----------
 _geocode_cache = {}
 _LOCAL_COORD_DICT = {
-    "上海": (31.2304, 121.4737),
-    "北京": (39.9042, 116.4074),
-    "广州": (23.1291, 113.2644),
-    "深圳": (22.5431, 114.0579),
-    "成都": (30.5728, 104.0668),
-    "武汉": (30.5928, 114.3055),
-    "南京": (32.0603, 118.7969),
-    "杭州": (30.2741, 120.1551),
-    "重庆": (29.4316, 106.9123),
-    "西安": (34.3416, 108.9398),
-    "天津": (39.0842, 117.2009),
-    "苏州": (31.2990, 120.5853),
-    "郑州": (34.7466, 113.6253),
-    "长沙": (28.2282, 112.9388),
-    "合肥": (31.8206, 117.2272),
-    "昆明": (24.8801, 102.8329),
-    "福州": (26.0745, 119.2965),
-    "厦门": (24.4798, 118.0894),
-    "青岛": (36.0671, 120.3826),
-    "大连": (38.9140, 121.6147),
+    "上海": (31.2304, 121.4737), "北京": (39.9042, 116.4074), "广州": (23.1291, 113.2644),
+    "深圳": (22.5431, 114.0579), "成都": (30.5728, 104.0668), "武汉": (30.5928, 114.3055),
+    "南京": (32.0603, 118.7969), "杭州": (30.2741, 120.1551), "重庆": (29.4316, 106.9123),
+    "西安": (34.3416, 108.9398), "天津": (39.0842, 117.2009), "苏州": (31.2990, 120.5853),
+    "郑州": (34.7466, 113.6253), "长沙": (28.2282, 112.9388), "合肥": (31.8206, 117.2272),
+    "昆明": (24.8801, 102.8329), "福州": (26.0745, 119.2965), "厦门": (24.4798, 118.0894),
+    "青岛": (36.0671, 120.3826), "大连": (38.9140, 121.6147),
 }
 
 def get_coordinates(address, proxies=None, retries=3, delay=1.0):
-    """
-    使用 requests 直接调用 Nominatim API，增加请求延迟、countrycodes限定，
-    失败时尝试本地词典兜底。
-    """
-    print(f"🗺️ Geocoding: {address}")
     if address in _geocode_cache:
         return _geocode_cache[address]
-
-    # 尝试从本地词典中匹配
     for city, (lat, lon) in _LOCAL_COORD_DICT.items():
         if city in address:
             result = (lat, lon, address)
@@ -226,50 +189,32 @@ def get_coordinates(address, proxies=None, retries=3, delay=1.0):
     user_agent = "SolarCollectorApp/1.0 (zhongyw@jetion.com.cn)"
     url = "https://nominatim.openstreetmap.org/search"
     params = {
-        "q": address,
-        "format": "json",
-        "limit": 1,
-        "addressdetails": 1,
-        "countrycodes": "cn",  # 限制中国区域
-        "accept-language": "zh,en"
+        "q": address, "format": "json", "limit": 1,
+        "addressdetails": 1, "countrycodes": "cn", "accept-language": "zh,en"
     }
-    headers = {
-        "User-Agent": user_agent,
-        "Accept": "application/json",
-        "Accept-Language": "en-US,en;q=0.9,zh;q=0.8",
-    }
-
+    headers = {"User-Agent": user_agent, "Accept": "application/json", "Accept-Language": "en-US,en;q=0.9,zh;q=0.8"}
     session = get_requests_session(proxies)
     for attempt in range(retries):
         try:
-            # 请求前延迟
             time.sleep(delay)
             resp = session.get(url, params=params, headers=headers, timeout=20)
             if resp.status_code == 200:
                 data = resp.json()
-                if data and len(data) > 0:
-                    lat = float(data[0]['lat'])
-                    lon = float(data[0]['lon'])
-                    display_name = data[0].get('display_name', address)
-                    result = (lat, lon, display_name)
+                if data:
+                    lat = float(data[0]['lat']); lon = float(data[0]['lon'])
+                    result = (lat, lon, data[0].get('display_name', address))
                     _geocode_cache[address] = result
                     return result
             elif resp.status_code == 429:
-                wait = (2 ** attempt) * 2 + random.uniform(0, 1)
-                time.sleep(wait)
-                continue
+                time.sleep((2 ** attempt) * 2 + random.uniform(0,1))
             else:
                 time.sleep(2 ** attempt)
-        except Exception as e:
-            app = App.get_running_app()
-            if app and hasattr(app, 'main_screen'):
-                app.main_screen._update_log(f"[ERROR] Geocode request error: {e}")
+        except:
             time.sleep(2 ** attempt)
     return None, None, None
 
 # ---------- API 数据获取（增强：间隔、重试、超时） ----------
 def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3, delay=0.5):
-    """获取 Open-Meteo 数据，带请求间隔"""
     time.sleep(delay)
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
@@ -284,21 +229,14 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
             if resp.status_code == 200:
                 data = resp.json()
                 daily = data.get('daily')
-                if not daily:
-                    continue
+                if not daily: continue
                 yearly = {}
                 for dt, val in zip(daily['time'], daily['shortwave_radiation_sum']):
-                    if val is None:
-                        continue
+                    if val is None: continue
                     year = int(dt[:4])
                     yearly[year] = yearly.get(year, 0.0) + val
-                result = []
-                for y in range(start_year, end_year + 1):
-                    if y in yearly:
-                        ghi_kwh = yearly[y] / 3.6
-                        result.append({'YEAR': y, 'GHI_kWh_m2_year': ghi_kwh})
-                if result:
-                    return result
+                result = [{'YEAR': y, 'GHI_kWh_m2_year': yearly[y]/3.6} for y in range(start_year, end_year+1) if y in yearly]
+                if result: return result
             elif resp.status_code >= 500:
                 time.sleep(2 ** attempt)
                 continue
@@ -312,7 +250,6 @@ def fetch_openmeteo_data(lat, lon, start_year, end_year, proxies=None, retries=3
     return None
 
 def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3, delay=0.5):
-    """获取 NASA POWER 数据，带请求间隔"""
     time.sleep(delay)
     url = "https://power.larc.nasa.gov/api/temporal/daily/point"
     params = {
@@ -330,180 +267,108 @@ def fetch_nasa_data(lat, lon, start_year, end_year, proxies=None, retries=3, del
                 daily_data = data['properties']['parameter']['ALLSKY_SFC_SW_DWN']
                 yearly = {}
                 for d, v in daily_data.items():
-                    if v is None:
-                        continue
+                    if v is None: continue
                     year = int(d[:4])
                     yearly[year] = yearly.get(year, 0.0) + v
                 result = [{'YEAR': y, 'GHI_kWh_m2_year': yearly[y]} for y in sorted(yearly) if start_year <= y <= end_year]
-                if result:
-                    return result
+                if result: return result
             elif resp.status_code >= 500:
                 time.sleep(2 ** attempt)
                 continue
             else:
                 break
-        except Exception as e:
-            app = App.get_running_app()
-            if app and hasattr(app, 'main_screen'):
-                app.main_screen._update_log(f"[ERROR] NASA error: {e}")
+        except:
             time.sleep(2 ** attempt)
     return None
 
 def fetch_pvgis_tmy(lat, lon, start_year, end_year, proxies=None, retries=3, delay=0.5):
-    """
-    从 PVGIS 获取 TMY 数据，优先使用 tmy_hourly 求和，
-    失败时使用经验估算（永不返回 None）。
-    """
     time.sleep(delay)
     session = get_requests_session(proxies)
     tmy_url = "https://re.jrc.ec.europa.eu/api/v5_2/tmy"
-    params_tmy = {
-        "lat": lat,
-        "lon": lon,
-        "outputformat": "json",
-        "components": "1",
-        "usehorizon": "1"
-    }
+    params_tmy = {"lat": lat, "lon": lon, "outputformat": "json", "components": "1", "usehorizon": "1"}
     for attempt in range(retries):
         try:
             resp = session.get(tmy_url, params=params_tmy, timeout=25)
             if resp.status_code == 200:
                 data = resp.json()
                 outputs = data.get('outputs', {})
-                # 优先从 hourly 数据求和
                 hourly_list = outputs.get('tmy_hourly', [])
-                if hourly_list and len(hourly_list) > 0:
+                if hourly_list:
                     total_wh = sum([h.get('G(h)', 0) for h in hourly_list])
                     annual_ghi = total_wh / 1000.0
                 else:
-                    # 回退到 monthly
                     monthly = outputs.get('monthly', {})
                     ghi_monthly = monthly.get('G(h)', [])
                     if len(ghi_monthly) == 12:
                         annual_ghi = sum(ghi_monthly)
                     else:
-                        continue  # 重试
-                # 生成逐年数据（年际波动 ±5%）
-                random.seed(42 + int(lat*1000))  # 固定种子保证可复现
+                        continue
+                random.seed(42 + int(lat*1000))
                 result = []
-                for y in range(start_year, end_year + 1):
+                for y in range(start_year, end_year+1):
                     variation = random.uniform(0.95, 1.05)
-                    result.append({
-                        'YEAR': y,
-                        'GHI_kWh_m2_year': annual_ghi * variation
-                    })
+                    result.append({'YEAR': y, 'GHI_kWh_m2_year': annual_ghi * variation})
                 return result
             elif resp.status_code >= 500:
                 time.sleep(2 ** attempt)
                 continue
             else:
                 break
-        except Exception as e:
-            app = App.get_running_app()
-            if app and hasattr(app, 'main_screen'):
-                app.main_screen._update_log(f"[ERROR] PVGIS TMY error: {e}")
+        except:
             time.sleep(2 ** attempt)
-
-    # ★★★ 最终兜底：经验估算
+    # 兜底经验估算
     estimated_ghi = max(1000, 1800 - abs(lat) * 10)
     app = App.get_running_app()
     if app and hasattr(app, 'main_screen'):
-        app.main_screen._update_log(f"[WARN] PVGIS 接口不可用，使用经验估算值 {estimated_ghi:.0f} kWh/m2")
-    result = []
-    for y in range(start_year, end_year + 1):
-        result.append({'YEAR': y, 'GHI_kWh_m2_year': estimated_ghi})
-    return result
+        app.main_screen._update_log(f"[WARN] PVGIS 不可用，使用经验估算 {estimated_ghi:.0f}")
+    return [{'YEAR': y, 'GHI_kWh_m2_year': estimated_ghi} for y in range(start_year, end_year+1)]
 
 def fetch_pvgis_data(lat, lon, start_year, end_year, proxies=None, retries=3, delay=0.5):
-    """直接使用 PVGIS TMY 增强版"""
     return fetch_pvgis_tmy(lat, lon, start_year, end_year, proxies, retries, delay)
 
 # ---------- 统计计算 ----------
 def compute_statistics(data_list):
-    if not data_list:
-        return None
+    if not data_list: return None
     vals = [d['GHI_kWh_m2_year'] for d in data_list]
-    avg = sum(vals) / len(vals)
-    std = (sum((x - avg) ** 2 for x in vals) / len(vals)) ** 0.5
-    return {
-        'avg': avg,
-        'max': max(vals),
-        'min': min(vals),
-        'stability': (std / avg * 100) if avg > 0 else 0,
-        'years': len(vals)
-    }
+    avg = sum(vals)/len(vals)
+    std = (sum((x-avg)**2 for x in vals)/len(vals))**0.5
+    return {'avg': avg, 'max': max(vals), 'min': min(vals), 'stability': (std/avg*100) if avg>0 else 0, 'years': len(vals)}
 
-# ---------- 内存管理辅助 ----------
+# ---------- 内存管理 ----------
 def clear_caches():
     global _geocode_cache
     _geocode_cache.clear()
     gc.collect()
 
 # ==============================================================
-# -------------------- 绘图组件（支持合同线） -----------------
+# -------------------- matplotlib 图表绘制 ---------------------
 # ==============================================================
-class LineChartWidget(Widget):
-    def __init__(self, x_values, y_values, title='', x_label='Year', y_label='GHI (kWh/m²)', contract_value=None, **kwargs):
-        super().__init__(**kwargs)
-        self.x_values = x_values
-        self.y_values = y_values
-        self.title = title
-        self.x_label = x_label
-        self.y_label = y_label
-        self.contract_value = contract_value  # 新增
-        self._last_size = (0, 0)
-        self.bind(pos=self._on_update, size=self._on_update)
-
-    def _on_update(self, *args):
-        new_size = (self.width, self.height)
-        if abs(new_size[0] - self._last_size[0]) > 5 or abs(new_size[1] - self._last_size[1]) > 5:
-            self._last_size = new_size
-            self.redraw()
-
-    def redraw(self, *args):
-        self.canvas.clear()
-        if not self.x_values or not self.y_values:
-            return
-        w, h = self.width, self.height
-        margin = 40
-        plot_w = w - 2 * margin
-        plot_h = h - 2 * margin
-        if plot_w <= 0 or plot_h <= 0:
-            return
-
-        x_min, x_max = min(self.x_values), max(self.x_values)
-        y_min, y_max = min(self.y_values), max(self.y_values)
-        y_range = y_max - y_min if y_max != y_min else 1.0
-        x_range = x_max - x_min if x_max != x_min else 1.0
-
-        with self.canvas:
-            Color(0.9, 0.9, 0.9, 0.5)
-            for i in range(6):
-                y_frac = i / 5.0
-                y_pos = margin + y_frac * plot_h
-                Line(points=[margin, y_pos, w - margin, y_pos], width=1)
-
-        points = []
-        for x, y in zip(self.x_values, self.y_values):
-            px = margin + ((x - x_min) / x_range) * plot_w
-            py = margin + ((y - y_min) / y_range) * plot_h
-            points.extend([px, py])
-        with self.canvas:
-            Color(0.12, 0.56, 1.0, 1)
-            if len(points) >= 4:
-                Line(points=points, width=2, close=False)
-            for i in range(0, len(points), 2):
-                Color(1, 0, 0, 1)
-                Line(circle=(points[i], points[i+1], 5), width=2)
-
-        # 绘制合同基准线
-        if self.contract_value is not None:
-            with self.canvas:
-                Color(1, 0, 0, 0.7)
-                # 计算 y 坐标
-                y_px = margin + ((self.contract_value - y_min) / y_range) * plot_h
-                if margin <= y_px <= w - margin:
-                    Line(points=[margin, y_px, w - margin, y_px], width=2, dash_length=5, dash_offset=2)
+def plot_single_source_matplotlib(df, full_address, source_name, contract_value=None, dpi=100):
+    """
+    使用 matplotlib 绘制专业图表（与 Ver2 一致），返回 PNG 字节数据。
+    """
+    if df is None or df.empty:
+        return None
+    years = df['YEAR']
+    ghi = df['GHI_kWh_m2_year']
+    fig = plt.figure(figsize=(8, 4.5))
+    ax = fig.add_subplot(111)
+    ax.plot(years, ghi, marker='o', linestyle='-', linewidth=2, markersize=6, color='#1E90FF', label='实际值')
+    if contract_value is not None and not np.isnan(contract_value):
+        ax.axhline(y=contract_value, color='red', linestyle='--', linewidth=2, label=f'合同基准线 ({contract_value:.0f})')
+    ax.set_xlabel('年份', fontsize=11)
+    ax.set_ylabel('年总辐照度 (kWh/m²)', fontsize=11)
+    ax.set_title(f'{full_address}\n{source_name} 年总辐照度', fontsize=13)
+    ax.grid(True, linestyle='--', alpha=0.6)
+    ax.set_xticks(years)
+    ax.legend()
+    fig.tight_layout()
+    # 转为字节
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+    return buf.getvalue()
 
 # ==============================================================
 # ------------------- 登录界面 --------------------------------
@@ -534,7 +399,6 @@ class LoginScreen(BoxLayout):
         self.add_widget(self.login_btn)
         self.status_label = Label(text='', size_hint_y=None, height=30)
         self.add_widget(self.status_label)
-
         self._load_config()
 
     def _load_config(self):
@@ -547,23 +411,17 @@ class LoginScreen(BoxLayout):
                     self.server_input.text = config['login'].get('server', 'local')
                     self.user_input.text = config['login'].get('username', 'admin')
                     self.remember_cb.active = config['login'].getboolean('remember', False)
-        except:
-            pass
+        except: pass
 
     def _save_config(self):
         try:
             config = configparser.ConfigParser()
-            config['login'] = {
-                'server': self.server_input.text.strip(),
-                'username': self.user_input.text.strip(),
-                'remember': str(self.remember_cb.active)
-            }
+            config['login'] = {'server': self.server_input.text.strip(), 'username': self.user_input.text.strip(), 'remember': str(self.remember_cb.active)}
             config_path = os.path.join(self.app.user_data_dir, 'config.ini')
             os.makedirs(self.app.user_data_dir, exist_ok=True)
             with open(config_path, 'w', encoding='utf-8') as f:
                 config.write(f)
-        except:
-            pass
+        except: pass
 
     def do_login(self, instance):
         server = self.server_input.text.strip()
@@ -574,8 +432,7 @@ class LoginScreen(BoxLayout):
                 self.status_label.text = '✅ Local login successful'
                 self.app.token = 'fake_jwt_token'
                 self.app.server_url = 'local'
-                if self.remember_cb.active:
-                    self._save_config()
+                if self.remember_cb.active: self._save_config()
                 self.app.show_main_screen()
             else:
                 self.status_label.text = '❌ Invalid account or password'
@@ -587,11 +444,9 @@ class LoginScreen(BoxLayout):
                     data = resp.json()
                     token = data.get('access_token')
                     if token:
-                        self.app.token = token
-                        self.app.server_url = server
+                        self.app.token = token; self.app.server_url = server
                         self.status_label.text = '✅ Login successful'
-                        if self.remember_cb.active:
-                            self._save_config()
+                        if self.remember_cb.active: self._save_config()
                         self.app.show_main_screen()
                     else:
                         self.status_label.text = '❌ No token returned'
@@ -609,28 +464,24 @@ class SettingsPopup(Popup):
         self.main_screen = main_screen
         layout = BoxLayout(orientation='vertical', spacing=10, padding=10)
 
-        # 并发数
         hbox1 = BoxLayout(spacing=5)
         hbox1.add_widget(Label(text='Max Concurrent Addresses:', size_hint_x=0.5))
         self.concurrent_spin = Spinner(text=str(main_screen.max_workers), values=[str(i) for i in range(1, 11)])
         hbox1.add_widget(self.concurrent_spin)
         layout.add_widget(hbox1)
 
-        # 请求延迟
         hbox2 = BoxLayout(spacing=5)
         hbox2.add_widget(Label(text='Request Delay (sec):', size_hint_x=0.5))
         self.delay_input = TextInput(text=str(main_screen.request_delay), multiline=False, input_filter='float')
         hbox2.add_widget(self.delay_input)
         layout.add_widget(hbox2)
 
-        # 重试次数
         hbox3 = BoxLayout(spacing=5)
         hbox3.add_widget(Label(text='Retry Times:', size_hint_x=0.5))
         self.retry_spin = Spinner(text=str(main_screen.retry_times), values=[str(i) for i in range(1, 6)])
         hbox3.add_widget(self.retry_spin)
         layout.add_widget(hbox3)
 
-        # 代理配置
         hbox4 = BoxLayout(spacing=5)
         self.proxy_check = CheckBox(active=main_screen.proxy_enabled)
         hbox4.add_widget(self.proxy_check)
@@ -643,16 +494,11 @@ class SettingsPopup(Popup):
         hbox4.add_widget(self.proxy_port)
         layout.add_widget(hbox4)
 
-        # 按钮
         btn_box = BoxLayout(size_hint_y=None, height=50, spacing=10)
-        save_btn = Button(text='Save')
-        save_btn.bind(on_press=self.save_settings)
-        cancel_btn = Button(text='Cancel')
-        cancel_btn.bind(on_press=self.dismiss)
-        btn_box.add_widget(save_btn)
-        btn_box.add_widget(cancel_btn)
+        save_btn = Button(text='Save'); save_btn.bind(on_press=self.save_settings)
+        cancel_btn = Button(text='Cancel'); cancel_btn.bind(on_press=self.dismiss)
+        btn_box.add_widget(save_btn); btn_box.add_widget(cancel_btn)
         layout.add_widget(btn_box)
-
         self.content = layout
 
     def save_settings(self, instance):
@@ -712,26 +558,22 @@ class DataWorker(threading.Thread):
                                  retries=retry_times, delay=request_delay)
                 if data is None:
                     self.main_screen._update_log(f"[ERROR] [{address}] {src_name} failed")
-                    self.main_screen._on_task_done()  # 更新进度
+                    self.main_screen._on_task_done()
                     continue
                 stats = compute_statistics(data)
                 if stats is None:
                     self.main_screen._update_log(f"[ERROR] [{address}] {src_name} invalid data")
                     self.main_screen._on_task_done()
                     continue
-                # 存储数据
                 self.main_screen._store_data(address, src_name, stats, data)
-                # 收集图表数据
                 years = [d['YEAR'] for d in data]
                 ghi = [d['GHI_kWh_m2_year'] for d in data]
                 addr_charts.append((src_name, years, ghi, stats))
                 self.main_screen._update_log(f"[INFO] [{address}] {src_name} completed")
-                self.main_screen._on_task_done()  # 每个数据源完成
+                self.main_screen._on_task_done()
 
             if addr_charts:
-                # 绘制图表（主线程）
                 Clock.schedule_once(lambda dt, a=address, charts=addr_charts: self.main_screen._display_charts(a, charts, contract), 0)
-                # 保存独立PNG（主线程延迟执行）
                 Clock.schedule_once(lambda dt, a=address, charts=addr_charts: self.main_screen._save_independent_charts(a, charts), 0.1)
             else:
                 self.main_screen._update_log(f"[ERROR] All sources failed for {address}")
@@ -760,9 +602,9 @@ class MainScreen(BoxLayout):
         self.last_start = 2010
         self.last_end = 2025
         self._last_csv_path = None
-        self._last_chart_paths = []  # 存储独立图表路径
+        self._last_chart_paths = []
 
-        # 新增设置参数
+        # 设置参数
         self.max_workers = 2
         self.request_delay = 0.5
         self.retry_times = 3
@@ -770,12 +612,10 @@ class MainScreen(BoxLayout):
         self.proxy_host = '127.0.0.1'
         self.proxy_port = 15732
 
-        # 停止事件
         self.stop_event = threading.Event()
         self.worker_threads = []
         self.task_queue = queue.Queue()
 
-        # 创建 TabbedPanel
         self.tabs = TabbedPanel(do_default_tab=False)
         self.tabs.default_tab_text = 'Data'
         self.tabs.tab_width = 120
@@ -812,24 +652,16 @@ class MainScreen(BoxLayout):
         data_content.add_widget(self.table_container)
 
         btn_row1 = BoxLayout(size_hint_y=None, height=50, spacing=5)
-        add_btn = Button(text='Add Row')
-        add_btn.bind(on_press=self.add_row)
-        del_btn = Button(text='Delete Last')
-        del_btn.bind(on_press=self.del_row)
-        clear_btn = Button(text='Clear All')
-        clear_btn.bind(on_press=self.clear_all)
-        load_btn = Button(text='Import CSV')
-        load_btn.bind(on_press=self.load_csv)
-        save_btn = Button(text='Export CSV')
-        save_btn.bind(on_press=self.save_csv)
-        btn_row1.add_widget(add_btn)
-        btn_row1.add_widget(del_btn)
-        btn_row1.add_widget(clear_btn)
-        btn_row1.add_widget(load_btn)
-        btn_row1.add_widget(save_btn)
+        add_btn = Button(text='Add Row'); add_btn.bind(on_press=self.add_row)
+        del_btn = Button(text='Delete Last'); del_btn.bind(on_press=self.del_row)
+        clear_btn = Button(text='Clear All'); clear_btn.bind(on_press=self.clear_all)
+        load_btn = Button(text='Import CSV'); load_btn.bind(on_press=self.load_csv)
+        save_btn = Button(text='Export CSV'); save_btn.bind(on_press=self.save_csv)
+        btn_row1.add_widget(add_btn); btn_row1.add_widget(del_btn); btn_row1.add_widget(clear_btn)
+        btn_row1.add_widget(load_btn); btn_row1.add_widget(save_btn)
         data_content.add_widget(btn_row1)
 
-        btn_row2 = BoxLayout(size_hint_y=None, height=30, spacing=3)
+        btn_row2 = BoxLayout(size_hint_y=None, height=50, spacing=5)
         self.start_btn = Button(text='Start', background_color=(0.2,0.7,0.2,1))
         self.start_btn.bind(on_press=self.start_processing)
         self.stop_btn = Button(text='Stop', background_color=(1,0.2,0.2,1))
@@ -842,15 +674,12 @@ class MainScreen(BoxLayout):
         self.settings_btn.bind(on_press=self.open_settings)
         self.export_local_btn = Button(text='📂 Export to Local', background_color=(0.2,0.6,0.8,1))
         self.export_local_btn.bind(on_press=self.export_all_to_local)
-        btn_row2.add_widget(self.start_btn)
-        btn_row2.add_widget(self.stop_btn)
-        btn_row2.add_widget(self.retry_btn)
-        btn_row2.add_widget(self.test_btn)
-        btn_row2.add_widget(self.settings_btn)
-        btn_row2.add_widget(self.export_local_btn)
+        btn_row2.add_widget(self.start_btn); btn_row2.add_widget(self.stop_btn)
+        btn_row2.add_widget(self.retry_btn); btn_row2.add_widget(self.test_btn)
+        btn_row2.add_widget(self.settings_btn); btn_row2.add_widget(self.export_local_btn)
         data_content.add_widget(btn_row2)
 
-        self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=10)
+        self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=20)
         data_content.add_widget(self.progress)
 
         tab_data.content = data_content
@@ -897,8 +726,7 @@ class MainScreen(BoxLayout):
         self.table_grid.add_widget(TextInput(text=lon, multiline=False, font_size='12sp'))
         self.table_grid.add_widget(TextInput(text=contract, multiline=False, font_size='12sp'))
 
-    def add_row(self, instance):
-        self.add_table_row()
+    def add_row(self, instance): self.add_table_row()
 
     def del_row(self, instance):
         children = self.table_grid.children
@@ -914,19 +742,14 @@ class MainScreen(BoxLayout):
             self.table_grid.add_widget(Label(text=h, size_hint_x=0.25, bold=True, font_size='12sp'))
 
     def load_csv(self, instance):
-        """实现导入CSV（地址列表）"""
         if platform == 'android':
-            # 暂不实现文件选择，引导用户手动输入
-            self._update_log('[WARN] CSV import on Android not fully implemented, please enter addresses manually')
+            self._update_log('[WARN] CSV import on Android not fully implemented')
             return
-        # 非Android环境可使用文件对话框，此处省略
         self._update_log('[INFO] Please implement file picker using plyer or Android Intent')
-        # 示例：添加一些测试地址
         for i in range(3):
             self.add_table_row(f'Address {i+1}', '', '', '')
 
     def save_csv(self, instance):
-        """实现导出当前表格为CSV"""
         try:
             rows = []
             children = self.table_grid.children
@@ -936,8 +759,7 @@ class MainScreen(BoxLayout):
             items = list(children)[:-4]
             items_reversed = list(reversed(items))
             for i in range(0, len(items_reversed), 4):
-                if i+3 >= len(items_reversed):
-                    break
+                if i+3 >= len(items_reversed): break
                 addr = items_reversed[i].text.strip()
                 lat = items_reversed[i+1].text.strip()
                 lon = items_reversed[i+2].text.strip()
@@ -946,7 +768,6 @@ class MainScreen(BoxLayout):
             if not rows:
                 self._update_log('[WARN] No rows to export')
                 return
-            # 保存到 Downloads
             csv_content = 'Address,Latitude,Longitude,Contract\n' + '\n'.join([','.join(row) for row in rows])
             filename = f"address_list_{datetime.now().strftime('%m%d_%H%M')}.csv"
             path = self._save_to_downloads(filename, csv_content.encode('utf-8-sig'), 'text/csv')
@@ -966,7 +787,6 @@ class MainScreen(BoxLayout):
         if self.is_running:
             self.stop_event.set()
             self._update_log('[INFO] Stop requested...')
-            # 清空队列
             while not self.task_queue.empty():
                 try:
                     self.task_queue.get_nowait()
@@ -1002,7 +822,7 @@ class MainScreen(BoxLayout):
                  {'latitude':31.23, 'longitude':121.47, 'start_date':'2020-01-01', 'end_date':'2020-01-02',
                   'daily':'shortwave_radiation_sum', 'timezone':'Asia/Shanghai'}),
                 ('NASA POWER', 'https://power.larc.nasa.gov/api/temporal/daily/point',
-                 {'parameters':'ALLSKY_SFC_SW_DWN','community':'RE','longitude':121.47,'latitude':31.23,
+                 {'parameters':'ALLSKY_SFC_SW_DWN','community':'RE','longitude':121.23,'latitude':31.23,
                   'start':'20200101','end':'20200102','format':'JSON','user':'pvuser'}),
                 ('PVGIS TMY', 'https://re.jrc.ec.europa.eu/api/v5_2/tmy',
                  {'lat':31.23, 'lon':121.47, 'outputformat':'json', 'components':'1'}),
@@ -1041,26 +861,21 @@ class MainScreen(BoxLayout):
         items_reversed = list(reversed(items))
         rows = []
         for i in range(0, len(items_reversed), 4):
-            if i+3 >= len(items_reversed):
-                break
+            if i+3 >= len(items_reversed): break
             addr = items_reversed[i].text.strip()
             lat_text = items_reversed[i+1].text.strip()
             lon_text = items_reversed[i+2].text.strip()
             contract_text = items_reversed[i+3].text.strip()
-            if not addr:
-                continue
+            if not addr: continue
             try:
                 lat_val = float(lat_text) if lat_text else None
-            except:
-                lat_val = None
+            except: lat_val = None
             try:
                 lon_val = float(lon_text) if lon_text else None
-            except:
-                lon_val = None
+            except: lon_val = None
             try:
                 contract_val = float(contract_text) if contract_text else None
-            except:
-                contract_val = None
+            except: contract_val = None
             rows.append((addr, lat_val, lon_val, contract_val))
 
         if not rows:
@@ -1086,8 +901,7 @@ class MainScreen(BoxLayout):
 
     def _start_processing_from_rows(self, rows, start, end):
         with self._lock:
-            if self.is_running:
-                return
+            if self.is_running: return
             self.is_running = True
             self.stop_event.clear()
 
@@ -1096,11 +910,10 @@ class MainScreen(BoxLayout):
         self.chart_box.clear_widgets()
         self._last_chart_paths.clear()
         self.completed = 0
-        self.total_tasks = len(rows) * 3  # 每个地址3个数据源
+        self.total_tasks = len(rows) * 3
         self.progress.value = 0
         self._update_log(f'[INFO] Processing {len(rows)} address(es) from {start} to {end} with max_workers={self.max_workers}')
 
-        # 填充任务队列
         self.task_queue = queue.Queue()
         for addr, lat, lon, contract in rows:
             if lat is None or lon is None:
@@ -1110,27 +923,21 @@ class MainScreen(BoxLayout):
                     continue
             self.task_queue.put((addr, lat, lon, contract, start, end, self.proxies, self.request_delay, self.retry_times))
 
-        # 启动工作线程
         self.worker_threads = []
         for _ in range(min(self.max_workers, self.task_queue.qsize())):
             worker = DataWorker(self.task_queue, self.stop_event, self)
             worker.start()
             self.worker_threads.append(worker)
 
-        # 启动监控线程（等待任务完成）
         threading.Thread(target=self._monitor_workers, daemon=True).start()
-
         self.start_btn.disabled = True
         self.stop_btn.disabled = False
 
     def _monitor_workers(self):
-        # 等待队列清空
         self.task_queue.join()
-        # 如果未被停止，则等待所有线程结束
         if not self.stop_event.is_set():
             for w in self.worker_threads:
                 w.join()
-        # 结束处理
         Clock.schedule_once(lambda dt: self.finish_processing(), 0)
 
     def finish_processing(self):
@@ -1144,17 +951,12 @@ class MainScreen(BoxLayout):
             self._show_no_data_popup()
             return
 
-        # 生成CSV（异步）
         self._update_log('[INFO] Generating CSV asynchronously...')
         threading.Thread(target=self._export_csv_async, daemon=True).start()
-
-        # 显示统计汇总
         self._show_statistics_popup()
-
-        # 内存清理
         gc.collect()
 
-    # ---- 进度和日志（主线程安全） ----
+    # ---- 进度和日志 ----
     @mainthread
     def _update_log(self, msg):
         self.log_text.text += f'\n{msg}'
@@ -1170,7 +972,6 @@ class MainScreen(BoxLayout):
         self.completed += 1
         self._update_progress()
 
-    # ---- 数据存储 ----
     def _store_data(self, address, src_name, stats, data):
         if address not in self.results:
             self.results[address] = {}
@@ -1178,41 +979,58 @@ class MainScreen(BoxLayout):
         self.results[address][src_name] = stats
         self.yearly[address][src_name] = data
 
-    # ---- 图表显示（含合同线） ----
+    # ---- 图表显示（使用 matplotlib） ----
     def _display_charts(self, addr, charts, contract_value=None):
+        """生成 matplotlib 图表并显示为 Image 控件"""
+        # 转换数据为 DataFrame 格式（便于复用绘图函数）
+        import pandas as pd
         title_label = Label(text=f'📍 {addr}', size_hint_y=None, height=35, bold=True, font_size='14sp')
         self.chart_box.add_widget(title_label)
         for src_name, years, ghi, stats in charts:
-            src_label = Label(text=f'📊 {src_name}', size_hint_y=None, height=25, font_size='12sp')
-            self.chart_box.add_widget(src_label)
-            chart_widget = LineChartWidget(x_values=years, y_values=ghi,
-                                           contract_value=contract_value,
-                                           size_hint_y=None, height=180)
-            self.chart_box.add_widget(chart_widget)
-            info = (f"Avg: {stats['avg']:.1f}   Max: {stats['max']:.1f}   Min: {stats['min']:.1f}   "
-                    f"Stability: {stats['stability']:.1f}%   Years: {stats['years']}")
-            info_label = Label(text=info, size_hint_y=None, height=20, font_size='11sp')
-            self.chart_box.add_widget(info_label)
+            df = pd.DataFrame({'YEAR': years, 'GHI_kWh_m2_year': ghi})
+            img_data = plot_single_source_matplotlib(df, addr, src_name, contract_value, dpi=80)
+            if img_data:
+                # 将图片数据写入临时文件，用 Kivy Image 显示
+                temp_img = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                temp_img.write(img_data)
+                temp_img.close()
+                img_widget = Image(source=temp_img.name, size_hint_y=None, height=300)
+                self.chart_box.add_widget(img_widget)
+                # 统计信息标签
+                info = (f"Avg: {stats['avg']:.1f}   Max: {stats['max']:.1f}   Min: {stats['min']:.1f}   "
+                        f"Stability: {stats['stability']:.1f}%   Years: {stats['years']}")
+                info_label = Label(text=info, size_hint_y=None, height=25, font_size='11sp')
+                self.chart_box.add_widget(info_label)
         # 更新高度
         total_height = sum(child.height for child in self.chart_box.children if hasattr(child, 'height'))
         total_height += 10 * len(self.chart_box.children)
         self.chart_box.height = max(total_height, 100)
 
-    # ---- 独立PNG保存 ----
+    # ---- 独立PNG保存（使用 matplotlib） ----
     def _save_independent_charts(self, addr, charts):
-        """每个地址+数据源保存为独立PNG"""
+        import pandas as pd
         for src_name, years, ghi, stats in charts:
-            # 创建临时图表控件，绘制并保存
-            widget = LineChartWidget(x_values=years, y_values=ghi, size=(600, 400))
-            # 强制布局和绘制
-            widget._on_update()
-            # 保存到临时目录
+            df = pd.DataFrame({'YEAR': years, 'GHI_kWh_m2_year': ghi})
+            # 使用 matplotlib 生成图像并保存
+            fig = plt.figure(figsize=(8, 4.5))
+            ax = fig.add_subplot(111)
+            ax.plot(years, ghi, marker='o', linestyle='-', linewidth=2, markersize=6, color='#1E90FF', label='实际值')
+            if hasattr(self, '_last_contract') and self._last_contract is not None:
+                ax.axhline(y=self._last_contract, color='red', linestyle='--', linewidth=2, label=f'合同基准线 ({self._last_contract:.0f})')
+            ax.set_xlabel('年份', fontsize=11)
+            ax.set_ylabel('年总辐照度 (kWh/m²)', fontsize=11)
+            ax.set_title(f'{addr}\n{src_name} 年总辐照度', fontsize=13)
+            ax.grid(True, linestyle='--', alpha=0.6)
+            ax.set_xticks(years)
+            ax.legend()
+            fig.tight_layout()
             safe_addr = re.sub(r'[\\/*?:"<>|]', '_', addr)
             filename = f"{safe_addr}_{src_name}.png"
             temp_dir = os.path.join(tempfile.gettempdir(), 'solar_charts')
             os.makedirs(temp_dir, exist_ok=True)
             filepath = os.path.join(temp_dir, filename)
-            widget.export_to_png(filepath)
+            fig.savefig(filepath, dpi=100, bbox_inches='tight')
+            plt.close(fig)
             self._last_chart_paths.append(filepath)
             self._update_log(f'[INFO] Chart saved: {filepath}')
 
@@ -1238,10 +1056,9 @@ class MainScreen(BoxLayout):
             for rec in records:
                 csv_content += f"{rec['Address']},{rec['Data Source']},{rec['Year']},{rec['GHI (kWh/m2/yr)']:.2f}\n"
             filename = f"solar_data_{datetime.now().strftime('%m%d_%H%M')}.csv"
-            # 保存到Downloads
             path = self._save_to_downloads(filename, csv_content.encode('utf-8-sig'), 'text/csv')
             if path:
-                self._last_csv_path = path  # 存储文件路径
+                self._last_csv_path = path
                 self._update_log(f'[INFO] CSV exported to Downloads: {filename}')
             else:
                 self._update_log('[ERROR] Failed to export CSV')
@@ -1250,17 +1067,18 @@ class MainScreen(BoxLayout):
 
     # ---- 文件保存（兼容所有Android版本） ----
     def _save_to_downloads(self, filename, content_bytes, mime_type='text/csv'):
-        """
-        保存到Downloads，优先使用传统公共目录，失败时回退到私有目录。
-        返回绝对路径（字符串），并确保路径可被用户找到。
-        """
+        if platform != 'android':
+            path = os.path.join(tempfile.gettempdir(), filename)
+            with open(path, 'wb') as f:
+                f.write(content_bytes)
+            return path
+
         try:
-            # 1. 尝试直接获取 Downloads 公共目录（适用于 API < 29）
             from jnius import autoclass
             Environment = autoclass('android.os.Environment')
             File = autoclass('java.io.File')
             FileOutputStream = autoclass('java.io.FileOutputStream')
-            
+
             downloads_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             if downloads_dir is not None and downloads_dir.exists():
                 file = File(downloads_dir, filename)
@@ -1268,40 +1086,37 @@ class MainScreen(BoxLayout):
                 fos.write(content_bytes)
                 fos.close()
                 return file.getAbsolutePath()
-            else:
-                # 2. 回退到应用外部文件目录（但会放在 Android/data 下，建议同时复制一份到 Downloads 如果可写）
+
+            # 回退到 MediaStore
+            try:
                 context = autoclass('org.kivy.android.PythonActivity').mActivity
-                # 尝试使用 MediaStore（API 29+）
-                try:
-                    ContentValues = autoclass('android.content.ContentValues')
-                    MediaStore = autoclass('android.provider.MediaStore')
-                    resolver = context.getContentResolver()
-                    values = ContentValues()
-                    values.put(MediaStore.Downloads.DISPLAY_NAME, filename)
-                    values.put(MediaStore.Downloads.MIME_TYPE, mime_type)
-                    values.put(MediaStore.Downloads.RELATIVE_PATH, 'Download/')
-                    uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                    if uri is not None:
-                        with resolver.openOutputStream(uri) as out:
-                            out.write(content_bytes)
-                        # 通过 URI 解析实际路径（可能为 null），返回 URI 字符串但用户不易找
-                        # 我们返回一个可读路径提示
-                        return "MediaStore:" + uri.toString()
-                except Exception as e:
-                    self._update_log(f'[WARN] MediaStore fallback failed: {e}')
-                
-                # 3. 最后回退到私有目录（但会放在外部存储的 Android/data 下）
-                fallback_dir = context.getExternalFilesDir(None)
-                if fallback_dir is None:
-                    fallback_dir = context.getFilesDir()  # 内部私有，更不好找
-                file = File(fallback_dir, filename)
-                fos = FileOutputStream(file)
-                fos.write(content_bytes)
-                fos.close()
-                return file.getAbsolutePath()
+                ContentValues = autoclass('android.content.ContentValues')
+                MediaStore = autoclass('android.provider.MediaStore')
+                resolver = context.getContentResolver()
+                values = ContentValues()
+                values.put(MediaStore.Downloads.DISPLAY_NAME, filename)
+                values.put(MediaStore.Downloads.MIME_TYPE, mime_type)
+                values.put(MediaStore.Downloads.RELATIVE_PATH, 'Download/')
+                uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                if uri is not None:
+                    with resolver.openOutputStream(uri) as out:
+                        out.write(content_bytes)
+                    return "MediaStore:" + uri.toString()
+            except:
+                pass
+
+            # 最终回退到应用外部文件目录
+            context = autoclass('org.kivy.android.PythonActivity').mActivity
+            fallback_dir = context.getExternalFilesDir(None)
+            if fallback_dir is None:
+                fallback_dir = context.getFilesDir()
+            file = File(fallback_dir, filename)
+            fos = FileOutputStream(file)
+            fos.write(content_bytes)
+            fos.close()
+            return file.getAbsolutePath()
         except Exception as e:
-            self._update_log(f'[ERROR] All save attempts failed: {e}')
-            # 终极回退：写入临时目录（用户更难找，但可避免崩溃）
+            self._update_log(f'[ERROR] Save failed: {e}')
             path = os.path.join(tempfile.gettempdir(), filename)
             with open(path, 'wb') as f:
                 f.write(content_bytes)
@@ -1353,7 +1168,6 @@ class MainScreen(BoxLayout):
         popup.open()
 
     def _show_statistics_popup(self):
-        """显示统计汇总"""
         if not self.results:
             return
         text = "📊 Statistics Summary:\n\n"
@@ -1373,7 +1187,7 @@ class MainScreen(BoxLayout):
             popup.open()
             return
 
-        # 生成图表截图
+        # 生成图表截图（使用 matplotlib 合成一张图？但这里保留原来整体截图方式，用户可自行保存）
         try:
             self.chart_box.do_layout()
             img_path = os.path.join(tempfile.gettempdir(), f'chart_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
@@ -1394,12 +1208,10 @@ class MainScreen(BoxLayout):
                 context = PythonActivity.mActivity
 
                 uris = ArrayList()
-                # CSV
                 if hasattr(self, '_last_csv_path') and self._last_csv_path:
                     csv_file = File(self._last_csv_path)
                     csv_uri = Uri.fromFile(csv_file)
                     uris.add(csv_uri)
-                # 截图
                 png_file = File(img_path)
                 png_uri = Uri.fromFile(png_file)
                 uris.add(png_uri)
@@ -1426,7 +1238,7 @@ class MainScreen(BoxLayout):
 class SolarApp(App):
     def build(self):
         self._write_startup_log("App starting...")
-        # 尝试加载系统字体
+        # 加载系统字体
         font_dirs = ['/system/fonts/', '/system/fonts/fallback/']
         font_files = ['DroidSansFallback.ttf', 'NotoSansCJK-Regular.ttc', 'NotoSansSC-Regular.otf',
                       'NotoSansCJKsc-Regular.otf', 'NotoSansCJK.ttc', 'NotoSans-Regular.ttf']
@@ -1449,7 +1261,7 @@ class SolarApp(App):
         if not font_loaded:
             self._write_startup_log("❌ All system fonts failed, using Kivy default")
 
-        # Android 权限请求
+        # Android 权限
         if platform == 'android':
             try:
                 from android.permissions import request_permissions, Permission
