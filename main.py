@@ -829,7 +829,7 @@ class MainScreen(BoxLayout):
         btn_row1.add_widget(save_btn)
         data_content.add_widget(btn_row1)
 
-        btn_row2 = BoxLayout(size_hint_y=None, height=50, spacing=5)
+        btn_row2 = BoxLayout(size_hint_y=None, height=30, spacing=3)
         self.start_btn = Button(text='Start', background_color=(0.2,0.7,0.2,1))
         self.start_btn.bind(on_press=self.start_processing)
         self.stop_btn = Button(text='Stop', background_color=(1,0.2,0.2,1))
@@ -850,7 +850,7 @@ class MainScreen(BoxLayout):
         btn_row2.add_widget(self.export_local_btn)
         data_content.add_widget(btn_row2)
 
-        self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=20)
+        self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=10)
         data_content.add_widget(self.progress)
 
         tab_data.content = data_content
@@ -1312,14 +1312,11 @@ class MainScreen(BoxLayout):
         if not self.yearly and not self._last_chart_paths:
             self._update_log('[WARN] No data to export, run data collection first.')
             return
-        # 确保CSV已生成
         if not hasattr(self, '_last_csv_path') or not self._last_csv_path:
             self._update_log('[INFO] Generating CSV before export...')
             self._export_csv_async()
-            # 等待生成（简单等待）
             time.sleep(1)
 
-        # 收集所有文件路径
         file_paths = []
         if hasattr(self, '_last_csv_path') and self._last_csv_path:
             file_paths.append(self._last_csv_path)
@@ -1330,11 +1327,10 @@ class MainScreen(BoxLayout):
             self._update_log('[WARN] No files to export.')
             return
 
-        # 弹窗提示
-        msg = "✅ Files saved to Downloads:\n\n"
+        msg = "✅ Files saved to:\n\n"
         for f in file_paths:
-            msg += f"• {os.path.basename(f)}\n"
-        msg += "\nYou can find them in the 'Downloads' folder using a file manager."
+            msg += f"• {f}\n"
+        msg += "\nLook for them in your phone's 'Download' folder or the path shown above."
         popup = Popup(title='Export Complete', content=Label(text=msg), size_hint=(0.9, 0.6))
         popup.open()
 
