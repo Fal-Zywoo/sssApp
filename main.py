@@ -1396,8 +1396,8 @@ class MainScreen(BoxLayout):
 
                 R_list = []
                 for low, high in intervals:
-                    r1 = round(random.uniform(low, high), 2)
-                    r2 = round(random.uniform(low, high), 2)
+                    r1 = round(random.uniform(low, high), 4)
+                    r2 = round(random.uniform(low, high), 4)
                     R_list.extend([r1, r2])
 
                 pred_values = []
